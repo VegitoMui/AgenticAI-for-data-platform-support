@@ -5,9 +5,9 @@ resources:
     watcher:
       name: "[${bundle.target}] agentic-ai watcher"
       schedule:
-        quartz_cron_expression: "0 */5 * * * ?"
+        quartz_cron_expression: "0 */2 * * * ?"
         timezone_id: Asia/Kolkata
-        pause_status: UNPAUSED
+        pause_status: PAUSED
       max_concurrent_runs: 1
       tasks:
         - task_key: detect_failed_runs
