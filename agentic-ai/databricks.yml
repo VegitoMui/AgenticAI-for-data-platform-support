@@ -1,0 +1,50 @@
+bundle:
+  name: agentic-ai
+
+include:
+  - resources/*.yml
+
+artifacts:
+  agentic_ai_wheel:
+    type: whl
+    build: python -m build --wheel
+    path: .
+
+variables:
+  catalog:
+    description: Unity Catalog catalog holding the agentic_ai schema
+    default: databricks_ws
+  schema:
+    description: Schema for all system tables
+    default: agentic_ai
+  secret_scope:
+    description: Databricks secret scope holding LLM and DevOps credentials
+    default: agentic-ai
+  watcher_interval_seconds:
+    description: Poll interval for the failed-run watcher
+    default: 300
+  approver_email:
+    description: Where approval notifications are sent
+    default: yashovardhan.rawat@airodigitallabs.com
+
+targets:
+  dev:
+    mode: development
+    default: true
+    workspace:
+      host: https://adb-REPLACE.azuredatabricks.net
+      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
+    variables:
+      schema: agentic_ai_dev
+      watcher_interval_seconds: 60
+
+  prod:
+    mode: production
+    workspace:
+      host: https://adb-REPLACE.azuredatabricks.net
+      root_path: /Workspace/agentic-ai/prod
+    permissions:
+      - level: CAN_MANAGE
+        user_name: yashovardhan.rawat@airodigitallabs.com
+    variables:
+      schema: agentic_ai

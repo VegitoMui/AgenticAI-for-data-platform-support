@@ -1,0 +1,83 @@
+resources:
+  jobs:
+
+    # Phase 1: polls system.lakeflow for newly failed runs and raises incidents.
+    watcher:
+      name: "[${bundle.target}] agentic-ai watcher"
+      schedule:
+        quartz_cron_expression: "0 */5 * * * ?"
+        timezone_id: Asia/Kolkata
+        pause_status: UNPAUSED
+      max_concurrent_runs: 1
+      tasks:
+        - task_key: detect_failed_runs
+          python_wheel_task:
+            package_name: agentic_ai
+            entry_point: watcher
+            parameters:
+              - --catalog=${var.catalog}
+              - --schema=${var.schema}
+              - --secret-scope=${var.secret_scope}
+          environment_key: default
+      environments:
+        - environment_key: default
+          spec:
+            client: "3"
+            dependencies:
+              - ./dist/*.whl
+      email_notifications:
+        on_failure:
+          - ${var.approver_email}
+
+    # Phase 2: executes approved requests, expires stale ones, sends result mail.
+    reconciler:
+      name: "[${bundle.target}] agentic-ai reconciler"
+      schedule:
+        quartz_cron_expression: "0 */2 * * * ?"
+        timezone_id: Asia/Kolkata
+        pause_status: UNPAUSED
+      max_concurrent_runs: 1
+      tasks:
+        - task_key: execute_approved
+          python_wheel_task:
+            package_name: agentic_ai
+            entry_point: reconciler
+            parameters:
+              - --catalog=${var.catalog}
+              - --schema=${var.schema}
+              - --secret-scope=${var.secret_scope}
+          environment_key: default
+      environments:
+        - environment_key: default
+          spec:
+            client: "3"
+            dependencies:
+              - ./dist/*.whl
+      email_notifications:
+        on_failure:
+          - ${var.approver_email}
+
+    # One-shot: creates or migrates all Delta tables. Run manually after deploy.
+    migrate:
+      name: "[${bundle.target}] agentic-ai migrate"
+      tasks:
+        - task_key: migrate
+          python_wheel_task:
+            package_name: agentic_ai
+            entry_point: migrate
+            parameters:
+              - --catalog=${var.catalog}
+              - --schema=${var.schema}
+          environment_key: default
+      environments:
+        - environment_key: default
+          spec:
+            client: "3"
+            dependencies:
+              - ./dist/*.whl
+
+  apps:
+    approvals:
+      name: agentic-ai-approvals-${bundle.target}
+      description: Approve or reject remediation actions proposed by the agentic system
+      source_code_path: ../src/agentic_ai/app
