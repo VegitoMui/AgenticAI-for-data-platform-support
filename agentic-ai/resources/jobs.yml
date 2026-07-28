@@ -1,6 +1,5 @@
 resources:
   jobs:
-
     # Phase 1: polls system.lakeflow for newly failed runs and raises incidents.
     watcher:
       name: "[${bundle.target}] agentic-ai watcher"
@@ -24,7 +23,7 @@ resources:
           spec:
             client: "3"
             dependencies:
-              - ./dist/*.whl
+              - ../dist/*.whl
       email_notifications:
         on_failure:
           - ${var.approver_email}
@@ -52,7 +51,7 @@ resources:
           spec:
             client: "3"
             dependencies:
-              - ./dist/*.whl
+              - ../dist/*.whl
       email_notifications:
         on_failure:
           - ${var.approver_email}
@@ -74,10 +73,10 @@ resources:
           spec:
             client: "3"
             dependencies:
-              - ./dist/*.whl
+              - ../dist/*.whl
 
-  apps:
-    approvals:
-      name: agentic-ai-approvals-${bundle.target}
-      description: Approve or reject remediation actions proposed by the agentic system
-      source_code_path: ../src/agentic_ai/app
+#  apps:
+#    approvals:
+#      name: agentic-ai-approvals-${bundle.target}
+#      description: Approve or reject remediation actions proposed by the agentic system
+#      source_code_path: ../src/agentic_ai/app
