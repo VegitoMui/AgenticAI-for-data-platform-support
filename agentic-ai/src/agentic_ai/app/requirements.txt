@@ -1,5 +1,6 @@
-fastapi
+fastapi>=0.110
 uvicorn
 jinja2
+python-multipart
 databricks-sql-connector
 databricks-sdk

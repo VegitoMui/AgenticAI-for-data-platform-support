@@ -1,36 +1,349 @@
 <!DOCTYPE html>
-<html>
-<head><title>Agentic AI Approvals</title>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Remediation approvals{% if pending %} ({{ pending|length }}){% endif %}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
-body { font-family: sans-serif; margin: 2rem; }
-.card { border: 1px solid #ccc; border-radius: 8px; padding: 1rem; margin-bottom: 1rem; }
-.actions { background: #f5f5f5; padding: 0.5rem; font-family: monospace; white-space: pre-wrap; }
-button { padding: 0.4rem 1rem; margin-right: 0.5rem; cursor: pointer; }
-.approve { background: #2e7d32; color: white; border: none; border-radius: 4px; }
-.reject { background: #c62828; color: white; border: none; border-radius: 4px; }
+  :root {
+    --paper: #E9EDF1;
+    --surface: #FFFFFF;
+    --ink: #17212C;
+    --muted: #5B6875;
+    --rule: #CFD7DF;
+    --go: #1E6B55;
+    --go-soft: #E2F0EB;
+    --stop: #A8322A;
+    --stop-soft: #F6E4E2;
+    --warn: #B7791F;
+    --warn-soft: #F7EDDC;
+    --calm: #7F93A6;
+    --sans: "Instrument Sans", "Segoe UI", system-ui, -apple-system, sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 15px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: inherit; }
+  :focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+
+  /* ---------------------------------------------------------- header */
+  .top {
+    display: flex; align-items: flex-end; justify-content: space-between; gap: 24px;
+    padding: 28px 36px 20px;
+  }
+  .top h1 { font-size: 26px; font-weight: 700; letter-spacing: -0.02em; margin: 0; line-height: 1.15; }
+  .top .sub { color: var(--muted); margin: 4px 0 0; }
+  .top .sub strong { color: var(--ink); font-weight: 600; }
+  .top .sub .soon { color: var(--warn); font-weight: 600; }
+  .who { text-align: right; color: var(--muted); font-size: 13px; }
+  .env {
+    display: inline-block; padding: 2px 10px; border-radius: 999px;
+    background: var(--ink); color: #fff; font-size: 12px; font-weight: 600; margin-bottom: 4px;
+  }
+  .env.prod { background: var(--stop); }
+
+  .notice {
+    margin: 0 36px 16px; padding: 12px 16px; border-radius: 8px;
+    background: var(--go-soft); color: var(--go); font-weight: 500;
+    border-left: 4px solid var(--go);
+  }
+  .notice.rejected { background: var(--stop-soft); color: var(--stop); border-left-color: var(--stop); }
+
+  /* ---------------------------------------------------------- layout */
+  .desk {
+    display: grid; grid-template-columns: 360px minmax(0, 1fr); gap: 20px;
+    padding: 0 36px 36px; align-items: start;
+  }
+  .desk > * { min-width: 0; }
+
+  /* ---------------------------------------------------------- queue */
+  .queue { display: flex; flex-direction: column; gap: 20px; position: sticky; top: 16px; }
+  .queue h2, .recent h2 { font-size: 13px; font-weight: 600; color: var(--muted); margin: 0 0 8px 4px; }
+  .items { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  .item a {
+    display: block; text-decoration: none; background: var(--surface);
+    border-radius: 6px; padding: 12px 14px 12px 16px; position: relative;
+    border: 1px solid transparent;
+  }
+  .item a::before {
+    content: ""; position: absolute; left: 0; top: 8px; bottom: 8px; width: 4px;
+    border-radius: 0 3px 3px 0; background: var(--calm);
+  }
+  .item.tone-medium a::before { background: var(--warn); }
+  .item.tone-high a::before, .item.tone-critical a::before { background: var(--stop); }
+  .item a:hover { border-color: var(--rule); }
+  .item.active a { border-color: var(--ink); box-shadow: 0 1px 0 var(--ink); }
+  .item .t {
+    font-weight: 600; line-height: 1.3;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .item .m { color: var(--muted); font-size: 13px; margin-top: 4px; display: flex; justify-content: space-between; gap: 8px; }
+  .item .m .p { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .item .m span:last-child { white-space: nowrap; }
+  .item .m .soon { color: var(--warn); font-weight: 600; }
+
+  .recent ul { list-style: none; margin: 0; padding: 0 4px; }
+  .recent li { padding: 8px 0; border-top: 1px solid var(--rule); font-size: 13px; }
+  .recent li:first-child { border-top: 0; }
+  .recent .d { font-weight: 600; }
+  .recent .d.yes { color: var(--go); }
+  .recent .d.no { color: var(--stop); }
+  .recent .x { color: var(--muted); }
+
+  /* ---------------------------------------------------------- detail */
+  .detail { background: var(--surface); border-radius: 10px; overflow: hidden; }
+  .detail .body { padding: 28px 32px 8px; }
+  .kicker { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; font-size: 13px; }
+  .sev {
+    padding: 2px 10px; border-radius: 999px; font-weight: 600;
+    background: #E6EBF0; color: var(--ink);
+  }
+  .sev.medium { background: var(--warn-soft); color: var(--warn); }
+  .sev.high, .sev.critical { background: var(--stop-soft); color: var(--stop); }
+  .kicker .agent { color: var(--muted); }
+  .detail h2.fix {
+    font-size: 28px; line-height: 1.2; letter-spacing: -0.02em; font-weight: 700;
+    margin: 12px 0 14px; max-width: 30ch;
+  }
+  .diagnosis { color: #2F3B47; max-width: 68ch; margin: 0 0 20px; font-size: 16px; }
+  .ask {
+    display: inline-block; font-size: 13px; color: var(--warn); background: var(--warn-soft);
+    padding: 4px 10px; border-radius: 4px; margin-bottom: 20px;
+  }
+
+  .facts {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 0; margin: 0 0 28px; border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule);
+  }
+  .facts div { padding: 12px 16px 12px 0; }
+  .facts dt { font-size: 12px; color: var(--muted); }
+  .facts dd { margin: 2px 0 0; font-weight: 600; overflow-wrap: anywhere; }
+  .facts dd.soon { color: var(--warn); }
+  .facts .wide { grid-column: 1 / -1; }
+
+  /* The execution plan: the one place the page spends its boldness. */
+  .plan h3 { font-size: 17px; margin: 0 0 4px; }
+  .plan .lede { color: var(--muted); margin: 0 0 16px; font-size: 14px; }
+  .steps { list-style: none; margin: 0; padding: 0; counter-reset: step; }
+  .step {
+    counter-increment: step; display: grid; grid-template-columns: 36px minmax(0, 1fr);
+    gap: 14px; padding: 0 0 18px; position: relative;
+  }
+  .step::before {
+    content: counter(step); width: 28px; height: 28px; border-radius: 50%;
+    display: grid; place-items: center; font-weight: 700; font-size: 13px;
+    background: var(--go); color: #fff; position: relative; z-index: 1;
+  }
+  .step.skip::before { background: var(--surface); color: var(--muted); border: 2px dashed var(--calm); }
+  .step:not(:last-child)::after {
+    content: ""; position: absolute; left: 13px; top: 30px; bottom: 0; width: 2px; background: var(--rule);
+  }
+  .step > div { min-width: 0; }
+  .step code, .step .advice {
+    display: block; padding: 10px 12px; border-radius: 6px; overflow-x: auto;
+  }
+  .step code {
+    font-family: var(--mono); font-size: 13px; background: #F1F4F7; color: var(--ink);
+    white-space: pre-wrap; overflow-wrap: anywhere;
+  }
+  .step.run code { background: var(--go-soft); }
+  .step .advice { background: #F1F4F7; color: #2F3B47; }
+  .step .how { font-size: 12.5px; margin-top: 6px; color: var(--muted); }
+  .step.run .how { color: var(--go); font-weight: 600; }
+  .noplan {
+    padding: 14px 16px; border-radius: 6px; background: #F1F4F7; color: var(--muted); margin-bottom: 18px;
+  }
+
+  /* ---------------------------------------------------------- decision */
+  .decide {
+    display: flex; gap: 12px; align-items: stretch; flex-wrap: wrap;
+    padding: 18px 32px; background: #F4F6F8; border-top: 1px solid var(--rule);
+  }
+  .decide form { display: flex; gap: 8px; margin: 0; }
+  .decide .reject { flex: 1 1 320px; }
+  .decide input[type=text] {
+    flex: 1; min-width: 0; font: inherit; padding: 10px 12px;
+    border: 1px solid var(--rule); border-radius: 6px; background: #fff;
+  }
+  button {
+    font: inherit; font-weight: 600; border-radius: 6px; padding: 10px 18px;
+    cursor: pointer; border: 1px solid transparent; white-space: nowrap;
+  }
+  .btn-reject { background: #fff; color: var(--stop); border-color: var(--stop); }
+  .btn-reject:hover { background: var(--stop-soft); }
+  .btn-approve { background: var(--go); color: #fff; }
+  .btn-approve:hover { background: #185947; }
+  .decide .foot { flex-basis: 100%; font-size: 12.5px; color: var(--muted); margin: 0; }
+
+  /* ---------------------------------------------------------- empty */
+  .empty { background: var(--surface); border-radius: 10px; padding: 48px 32px; }
+  .empty h2 { margin: 0 0 8px; font-size: 22px; }
+  .empty p { color: var(--muted); margin: 0; max-width: 60ch; }
+
+  @media (max-width: 900px) {
+    .top { padding: 20px 18px 14px; flex-direction: column; align-items: flex-start; }
+    .who { text-align: left; }
+    .notice { margin: 0 18px 14px; }
+    .desk { grid-template-columns: 1fr; padding: 0 18px 24px; }
+    .queue { position: static; order: 2; }
+    .detail, .empty { order: 1; }
+    .detail .body { padding: 22px 18px 4px; }
+    .decide { padding: 16px 18px; }
+    .detail h2.fix { font-size: 23px; }
+  }
 </style>
 </head>
 <body>
-<h1>Pending Approval Requests ({{ requests|length }})</h1>
-{% for r in requests %}
-<div class="card">
-  <h3>{{ r.pipeline_name }} -- {{ r.agent_name }} (severity {{ r.severity }})</h3>
-  <p><b>Diagnosis:</b> {{ r.diagnosis }}</p>
-  <p><b>Proposed fix:</b> {{ r.fix_suggestion }} ({{ r.fix_complexity }})</p>
-  <div class="actions">{{ r.proposed_actions }}</div>
-  <p><small>Requested {{ r.requested_at }} · expires {{ r.expires_at }}</small></p>
-  <form method="post" action="/approve" style="display:inline">
-    <input type="hidden" name="request_id" value="{{ r.request_id }}">
-    <button class="approve" type="submit">Approve</button>
-  </form>
-  <form method="post" action="/reject" style="display:inline">
-    <input type="hidden" name="request_id" value="{{ r.request_id }}">
-    <input type="text" name="notes" placeholder="reason (optional)">
-    <button class="reject" type="submit">Reject</button>
-  </form>
-</div>
-{% else %}
-<p>No pending requests.</p>
-{% endfor %}
+
+<header class="top">
+  <div>
+    <h1>Remediation approvals</h1>
+    <p class="sub">
+      {% if pending %}
+        <strong>{{ pending|length }}</strong> {{ "fix is" if pending|length == 1 else "fixes are" }} waiting for your decision{% if expiring_count %}, <span class="soon">{{ expiring_count }} expiring within 12 hours</span>{% endif %}.
+      {% else %}
+        Nothing is waiting for a decision.
+      {% endif %}
+    </p>
+  </div>
+  <div class="who">
+    <span class="env {{ environment }}">{{ environment }}</span><br>
+    {% if reviewer %}Signed in as {{ reviewer }}{% endif %}
+  </div>
+</header>
+
+{% if notice %}
+  <div class="notice {% if 'Rejected' in notice %}rejected{% endif %}" role="status">{{ notice }}</div>
+{% endif %}
+
+<main class="desk">
+
+  <aside class="queue">
+    {% if pending %}
+    <section>
+      <h2>Waiting</h2>
+      <ul class="items">
+        {% for p in pending %}
+        <li class="item tone-{{ p.severity_tone }} {% if selected and p.request_id == selected.request_id %}active{% endif %}">
+          <a href="/?id={{ p.request_id }}" {% if selected and p.request_id == selected.request_id %}aria-current="true"{% endif %}>
+            <div class="t">{{ p.fix_suggestion or "Fix proposed" }}</div>
+            <div class="m">
+              <span class="p">{{ p.pipeline_name }}</span>
+              {% if p.expiring_soon %}<span class="soon">expires {{ p.expires_rel }}</span>
+              {% else %}<span>{{ p.requested_rel }}</span>{% endif %}
+            </div>
+          </a>
+        </li>
+        {% endfor %}
+      </ul>
+    </section>
+    {% endif %}
+
+    {% if recent %}
+    <section class="recent">
+      <h2>Recent decisions</h2>
+      <ul>
+        {% for r in recent %}
+        <li>
+          <span class="d {{ 'yes' if r.positive else 'no' }}">{{ r.decision_text }}</span>
+          <div class="x">{{ r.pipeline_name }}, {{ r.decided_rel }}{% if r.reviewed_by %} by {{ r.reviewed_by }}{% endif %}</div>
+        </li>
+        {% endfor %}
+      </ul>
+    </section>
+    {% endif %}
+  </aside>
+
+  {% if selected %}
+  {% set s = selected %}
+  <article class="detail" aria-labelledby="fix-title">
+    <div class="body">
+      <div class="kicker">
+        <span class="sev {{ s.severity_tone }}">{{ s.severity_label }} severity{% if s.severity %} ({{ s.severity }}/10){% endif %}</span>
+        <span class="agent">Diagnosed by the {{ s.agent_name or "unknown" }} agent</span>
+      </div>
+
+      <h2 class="fix" id="fix-title">{{ s.fix_suggestion or "Fix proposed" }}</h2>
+      <p class="diagnosis">{{ s.diagnosis }}</p>
+
+      {% if s.requires_human %}
+        <div class="ask">The agent asked for a person to check this before it runs.</div>
+      {% endif %}
+
+      <dl class="facts">
+        <div class="wide"><dt>Pipeline</dt><dd>{{ s.pipeline_name }}</dd></div>
+        <div><dt>Fix complexity</dt><dd>{{ (s.fix_complexity or "unknown")|capitalize }}</dd></div>
+        <div><dt>Requested</dt><dd>{{ s.requested_rel }}</dd></div>
+        <div><dt>Expires</dt><dd class="{{ 'soon' if s.expiring_soon }}">{{ s.expires_rel }}</dd></div>
+        <div><dt>Incident</dt><dd>{{ s.incident_id }}</dd></div>
+        <div><dt>Request</dt><dd>{{ s.request_id }}</dd></div>
+        {% if s.github_issue_number %}<div><dt>Ticket</dt><dd>#{{ s.github_issue_number }}</dd></div>{% endif %}
+      </dl>
+
+      <section class="plan">
+        <h3>What happens if you approve</h3>
+        {% if s.actions %}
+          <p class="lede">
+            {% if s.runnable %}
+              {{ s.runnable }} of {{ s.actions|length }} {{ "step runs" if s.actions|length == 1 else "steps run" }} automatically. The rest are listed for you to act on by hand.
+            {% else %}
+              None of these steps can run automatically. Approving records the decision; the work is done by hand.
+            {% endif %}
+          </p>
+          <ol class="steps">
+            {% for a in s.actions %}
+            <li class="step {{ 'run' if a.runs else 'skip' }}">
+              <div>
+                {% if a.kind == "Advice" %}
+                  <div class="advice">{{ a.text }}</div>
+                {% else %}
+                  <code>{{ a.text }}</code>
+                {% endif %}
+                <div class="how">{{ a.note }}</div>
+              </div>
+            </li>
+            {% endfor %}
+          </ol>
+        {% else %}
+          <div class="noplan">The agent did not propose any steps. Approving only records the decision.</div>
+        {% endif %}
+      </section>
+    </div>
+
+    <div class="decide">
+      <form class="reject" method="post" action="/reject">
+        <input type="hidden" name="request_id" value="{{ s.request_id }}">
+        <label for="notes" class="visually-hidden" style="position:absolute;left:-9999px">Reason for rejecting</label>
+        <input type="text" id="notes" name="notes" placeholder="Reason for rejecting (shown on the ticket)" maxlength="500">
+        <button class="btn-reject" type="submit">Reject</button>
+      </form>
+      <form method="post" action="/approve">
+        <input type="hidden" name="request_id" value="{{ s.request_id }}">
+        <button class="btn-approve" type="submit">
+          {% if s.runnable %}Approve and run {{ s.runnable }} {{ "step" if s.runnable == 1 else "steps" }}{% else %}Approve{% endif %}
+        </button>
+      </form>
+      <p class="foot">Approved steps run on the next reconciler pass, within 2 minutes. Requests left undecided expire after 72 hours and nothing runs.</p>
+    </div>
+  </article>
+  {% else %}
+  <section class="empty">
+    <h2>You're all caught up</h2>
+    <p>When the agent is unsure about a fix, or the fix is risky, it pauses and the request appears here for you to approve or reject. Routine fixes run on their own and are recorded on their tickets.</p>
+  </section>
+  {% endif %}
+
+</main>
 </body>
 </html>
