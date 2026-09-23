@@ -10,7 +10,6 @@ than toolkit evidence. It is replaced, not wrapped, when Phase 3 lands.
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass
 
@@ -39,19 +38,25 @@ class Diagnosis:
 _PROMPT = """You are diagnosing a failed Databricks pipeline run and proposing a fix.
 
 AGENT CATEGORIES:
-- processing: OOM, heap space, GC overhead, shuffle spill, data skew, checkpoint failure, streaming failure, executor lost
-- ingestion: connection timeout, rate limit, schema drift, duplicate records, source unreachable, API failure
-- storage: small files, OPTIMIZE, VACUUM, corrupt partition, stale data, schema evolution, table properties
-- analytics: slow query, full table scan, no predicate pushdown, dashboard timeout, permissions, SQL performance
+- processing: OOM, heap space, GC overhead, shuffle spill, data skew,
+  checkpoint failure, streaming failure, executor lost
+- ingestion: connection timeout, rate limit, schema drift, duplicate records,
+  source unreachable, API failure
+- storage: small files, OPTIMIZE, VACUUM, corrupt partition, stale data,
+  schema evolution, table properties
+- analytics: slow query, full table scan, no predicate pushdown, dashboard
+  timeout, permissions, SQL performance
 
 Error: {error_text}
 Pipeline: {pipeline_name}
 
-Propose concrete fix actions as SQL statements (OPTIMIZE, VACUUM, ALTER TABLE, spark.conf.set(...)) where you
-can, or plain-English instructions where a human must decide (e.g. "review and confirm before dropping table X").
+Propose concrete fix actions as SQL statements (OPTIMIZE, VACUUM, ALTER TABLE,
+spark.conf.set(...)) where you can, or plain-English instructions where a human
+must decide (e.g. "review and confirm before dropping table X").
 
-Set requires_human=true if you are not confident the fix is safe to run automatically, if it is destructive
-(DROP, TRUNCATE, data-losing VACUUM), or if the diagnosis itself is uncertain.
+Set requires_human=true if you are not confident the fix is safe to run
+automatically, if it is destructive (DROP, TRUNCATE, data-losing VACUUM), or if
+the diagnosis itself is uncertain.
 
 Return ONLY JSON:
 {{

@@ -49,7 +49,7 @@ def run_query(query: str, params: tuple = ()) -> list[dict]:
         with conn.cursor() as cur:
             cur.execute(query, params)
             cols = [c[0] for c in cur.description]
-            return [dict(zip(cols, row)) for row in cur.fetchall()]
+            return [dict(zip(cols, row, strict=True)) for row in cur.fetchall()]
 
 
 def run_execute(query: str, params: tuple = ()) -> None:
