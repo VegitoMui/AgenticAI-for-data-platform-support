@@ -37,6 +37,16 @@ PLACEHOLDER_TABLES = (
     "target_table", "your_table", "table_name", "schema.table", "agentic_ai.table",
 )
 
+INSTRUCTION_WORDS = (
+    "run ", "add ", "apply ", "check ", "verify ", "ensure ", "review ", "investigate ", "enable ",
+)
+
+_CONF_PATTERN = re.compile(r"spark\.conf\.set\(['\"](.+?)['\"]\s*,\s*['\"](.+?)['\"]\)")
+
+
+def _elapsed(start: float) -> float:
+    return round(time.time() - start, 2)
+
 
 def classify_action(action_text: str) -> str:
     stripped = action_text.strip()
@@ -52,8 +62,7 @@ def classify_action(action_text: str) -> str:
     for prefix in SQL_DDL_PREFIXES:
         if upper.startswith(prefix):
             return "SQL_DDL"
-    if any(w in stripped.lower() for w in
-           ("run ", "add ", "apply ", "check ", "verify ", "ensure ", "review ", "investigate ", "enable ")):
+    if any(w in stripped.lower() for w in INSTRUCTION_WORDS):
         return "INSTRUCTION"
     return "UNKNOWN"
 
@@ -67,34 +76,35 @@ def execute_action(spark, action_text: str, action_type: str) -> tuple[str, str,
     try:
         if action_type == "SQL_DDL":
             if any(p in stripped.lower() for p in PLACEHOLDER_TABLES):
-                return "SKIPPED", "", "Placeholder table name detected -- skipped", round(time.time() - start, 2)
+                return "SKIPPED", "", "Placeholder table name detected -- skipped", _elapsed(start)
             result = spark.sql(stripped)
             try:
                 rows = result.collect()
                 output = f"OK -- {len(rows)} row(s) returned"
             except Exception:
                 output = "OK -- statement executed (no rows)"
-            return "SUCCESS", output, "", round(time.time() - start, 2)
+            return "SUCCESS", output, "", _elapsed(start)
 
         if action_type == "SPARK_CONF":
-            match = re.search(r"spark\.conf\.set\(['\"](.+?)['\"]\s*,\s*['\"](.+?)['\"]\)", stripped)
+            match = _CONF_PATTERN.search(stripped)
             if not match:
-                return "SKIPPED", "", "Could not parse spark.conf.set arguments", round(time.time() - start, 2)
+                return "SKIPPED", "", "Could not parse spark.conf.set arguments", _elapsed(start)
             key, value = match.group(1), match.group(2)
             if key in CLUSTER_LEVEL_CONFIGS:
-                return "SKIPPED", "", f"{key} is cluster-level -- cannot apply at runtime", round(time.time() - start, 2)
+                reason = f"{key} is cluster-level -- cannot apply at runtime"
+                return "SKIPPED", "", reason, _elapsed(start)
             spark.conf.set(key, value)
-            return "SUCCESS", f"Set {key} = {value}", "", round(time.time() - start, 2)
+            return "SUCCESS", f"Set {key} = {value}", "", _elapsed(start)
 
         if action_type == "DBUTILS":
-            return "SKIPPED", "", "DBUTILS actions require manual execution", round(time.time() - start, 2)
+            return "SKIPPED", "", "DBUTILS actions require manual execution", _elapsed(start)
         if action_type == "COMMENT":
-            return "SKIPPED", action_text, "Documentation only", round(time.time() - start, 2)
+            return "SKIPPED", action_text, "Documentation only", _elapsed(start)
 
-        return "SKIPPED", "", f"Action type {action_type} not executable", round(time.time() - start, 2)
+        return "SKIPPED", "", f"Action type {action_type} not executable", _elapsed(start)
 
     except Exception as e:
-        return "FAILED", "", str(e)[:300], round(time.time() - start, 2)
+        return "FAILED", "", str(e)[:300], _elapsed(start)
 
 
 def execute_all(spark, actions: list[str]) -> list[dict]:
