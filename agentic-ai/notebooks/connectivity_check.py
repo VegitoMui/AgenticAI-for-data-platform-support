@@ -10,10 +10,13 @@
 
 # COMMAND ----------
 
-# MAGIC %pip install /Workspace/agentic-ai/prod/artifacts/.internal/agentic_ai-0.1.0-py3-none-any.whl --quiet
+# MAGIC %pip install openai requests --quiet
 # MAGIC %restart_python
 
 # COMMAND ----------
+
+import sys
+sys.path.append("/Workspace/Users/yashovardhan.rawat@airodigitallabs.com/AgenticAI-for-data-platform-support/agentic-ai/src")
 
 import logging
 logging.basicConfig(level=logging.INFO)
@@ -84,21 +87,71 @@ for c in commits[:5]:
 
 # COMMAND ----------
 
-display(spark.sql("""
-    SELECT result_state, count(*) AS runs
-    FROM system.lakeflow.job_run_timeline
-    WHERE period_end_time > current_timestamp() - INTERVAL 7 DAYS
-    GROUP BY result_state
-    ORDER BY runs DESC
-"""))
+# MAGIC %md
+# MAGIC ## 4. Failed-run detection source
+# MAGIC
+# MAGIC Probes both detection sources and reports which are usable.
+# MAGIC SystemTablesSource is preferred; JobsApiSource is the fallback that
+# MAGIC works without metastore-level system schema grants.
 
 # COMMAND ----------
 
-display(spark.sql("""
-    SELECT count(*) AS queries
-    FROM system.query.history
-    WHERE start_time > current_timestamp() - INTERVAL 1 DAYS
-"""))
+from datetime import datetime, timedelta, timezone
+
+FAILED_STATES = ("FAILED", "TIMED_OUT", "CANCELED")
+LOOKBACK_HOURS = 24
+
+# --- Source A: system tables -------------------------------------------------
+
+system_tables_ok = False
+try:
+    df = spark.sql(f"""
+        SELECT result_state, count(*) AS runs
+        FROM system.lakeflow.job_run_timeline
+        WHERE period_end_time > current_timestamp() - INTERVAL {LOOKBACK_HOURS} HOURS
+        GROUP BY result_state
+        ORDER BY runs DESC
+    """)
+    rows = df.collect()
+    system_tables_ok = True
+    print(f"SystemTablesSource: AVAILABLE ({len(rows)} distinct result_state values)")
+    for r in rows:
+        print(f"    {r['result_state'] or 'NULL':12} {r['runs']}")
+except Exception as exc:
+    print(f"SystemTablesSource: UNAVAILABLE -- {str(exc)[:160]}")
+
+# --- Source B: Jobs API ------------------------------------------------------
+
+from databricks.sdk import WorkspaceClient
+
+w = WorkspaceClient()
+since = datetime.now(timezone.utc) - timedelta(hours=LOOKBACK_HOURS)
+start_time_from = int(since.timestamp() * 1000)
+
+runs, failed = [], []
+for run in w.jobs.list_runs(
+    completed_only=True,
+    start_time_from=start_time_from,
+    expand_tasks=False,
+    limit=25,
+):
+    runs.append(run)
+    state = run.state
+    result_state = getattr(state.result_state, "value", None) if state else None
+    if result_state in FAILED_STATES:
+        failed.append((run.run_id, run.job_id, run.run_name, result_state,
+                       (state.state_message or "")[:120]))
+
+print(f"\nJobsApiSource: AVAILABLE -- {len(runs)} completed run(s) in the "
+      f"last {LOOKBACK_HOURS}h, {len(failed)} in a failed state")
+for run_id, job_id, name, result_state, msg in failed[:10]:
+    print(f"    run={run_id} job={job_id} {result_state:10} {str(name)[:40]}")
+    if msg:
+        print(f"        {msg}")
+
+assert runs or failed is not None, "Jobs API returned nothing and did not error -- investigate"
+print(f"\nDetection source to use for Phase 1: "
+      f"{'system_tables' if system_tables_ok else 'jobs_api'}")
 
 # COMMAND ----------
 
@@ -117,3 +170,6 @@ print("PASS: schema is writable")
 # COMMAND ----------
 
 print("All connectivity checks complete.")
+
+# COMMAND ----------
+

@@ -1,0 +1,9 @@
+command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+env:
+  - name: "AGENTIC_CATALOG"
+    value: "databricks_ws"
+  - name: "AGENTIC_SCHEMA"
+    value: "agentic_ai_dev"
+  - name: "DATABRICKS_WAREHOUSE_ID"
+    valueFrom: "sql-warehouse"

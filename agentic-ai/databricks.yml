@@ -26,6 +26,8 @@ variables:
   approver_email:
     description: Where approval notifications are sent
     default: yashovardhan.rawat@airodigitallabs.com
+  warehouse_id:
+    description: SQL warehouse the approvals App queries through. No default -- each target must set it.
 
 targets:
   dev:
@@ -37,6 +39,7 @@ targets:
     variables:
       schema: agentic_ai_dev
       watcher_interval_seconds: 60
+      warehouse_id: "REPLACE_WITH_DEV_WAREHOUSE_ID"
 
   prod:
     mode: production
@@ -48,3 +51,4 @@ targets:
         user_name: yashovardhan.rawat@airodigitallabs.com
     variables:
       schema: agentic_ai
+      warehouse_id: "REPLACE_WITH_PROD_WAREHOUSE_ID"

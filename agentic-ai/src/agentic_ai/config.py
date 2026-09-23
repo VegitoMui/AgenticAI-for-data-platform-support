@@ -33,10 +33,14 @@ class Settings:
     # Telemetry
     watcher_lookback_hours: int = 24
     watcher_batch_limit: int = 25
-    failed_states: tuple[str, ...] = ("FAILED", "TIMED_OUT", "ERROR")
+    # Valid result_state values in system.lakeflow.job_run_timeline are
+    # SUCCESS, FAILED, TIMED_OUT, CANCELED, EXCLUDED, MAXIMUM_CONCURRENT_RUNS_REACHED.
+    # 'ERROR' is not one of them and matched nothing.
+    failed_states: tuple[str, ...] = ("FAILED", "CANCELED", "CANCELLED", "ERROR", "TIMED_OUT")
+    detection_source: str = "auto"  # system_tables | jobs_api | auto
 
     # Approval
-    approval_expiry_hours: int = 24
+    approval_expiry_hours: int = 72
     auto_approve_enabled: bool = False
 
     _resolver: SecretResolver = field(default_factory=SecretResolver, repr=False)
@@ -117,9 +121,15 @@ def settings_from_args(argv: list[str] | None = None) -> Settings:
     parser.add_argument("--catalog", default=os.getenv("AGENTIC_CATALOG", "databricks_ws"))
     parser.add_argument("--schema", default=os.getenv("AGENTIC_SCHEMA", "agentic_ai"))
     parser.add_argument("--secret-scope", default=os.getenv("AGENTIC_SECRET_SCOPE", "agentic-ai"))
+    parser.add_argument(
+        "--detection-source",
+        default=os.getenv("AGENTIC_DETECTION_SOURCE", "auto"),
+        choices=["system_tables", "jobs_api", "auto"],
+    )
     known, _ = parser.parse_known_args(argv)
     return Settings(
         catalog=known.catalog,
         schema=known.schema,
         secret_scope=known.secret_scope,
+        detection_source=known.detection_source,
     )

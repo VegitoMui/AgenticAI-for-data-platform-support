@@ -76,9 +76,27 @@ class LLMClient:
                 log.warning("provider %s failed (%s), falling back", provider.name, _code(last_error))
                 continue
 
+            # Some OpenAI-compatible providers (notably free-tier models on
+            # OpenRouter/Groq) can return a 200 with no error but an empty or
+            # null message.content -- e.g. on a content filter trip or a
+            # provider-side hiccup that doesn't raise. Treat that the same as
+            # a request exception: log it and fall through to the next
+            # provider, rather than crashing the caller with a NoneType error
+            # or silently returning an empty string as if it were a real answer.
+            content = None
+            try:
+                content = response.choices[0].message.content
+            except Exception:
+                pass
+
+            if not content:
+                last_error = f"{provider.name} returned empty/null content"
+                log.warning("provider %s returned no content, falling back", provider.name)
+                continue
+
             return LLMResult(
                 status="success",
-                content=response.choices[0].message.content or "",
+                content=content,
                 latency_sec=round(time.time() - start, 2),
                 tokens_used=response.usage.total_tokens if response.usage else "N/A",
                 model=provider.model,
