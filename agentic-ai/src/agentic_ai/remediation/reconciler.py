@@ -20,8 +20,9 @@ in order:
      not by this job). Writes remediation_log, closes the GitHub issue,
      updates incident status.
 
-  4. Close out approval_requests with status='rejected' -- close the issue
-     with the reviewer's note, update incident status, no execution.
+  4. Close out approval_requests with status='rejected_pending_close' --
+     close the issue with the reviewer's note, update incident status,
+     no execution.
 
 GitHub issue creation/closure failures are logged and swallowed -- they must
 never block remediation or approval processing.
@@ -49,16 +50,12 @@ def _get_spark():
     return SparkSession.builder.getOrCreate()
 
 
-def _now_literal() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-
-
 # --------------------------------------------------------------------- step 1
 
 def expire_stale_requests(settings: Settings, spark) -> int:
     table = settings.table("approval_requests")
     incidents = settings.table("incidents")
-    cutoff = (datetime.now(timezone.utc) - timedelta(hours=settings.approval_expiry_hours))
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=settings.approval_expiry_hours)
     cutoff_literal = cutoff.strftime("%Y-%m-%d %H:%M:%S")
 
     stale = spark.sql(f"""
@@ -88,14 +85,18 @@ def expire_stale_requests(settings: Settings, spark) -> int:
 # --------------------------------------------------------------------- step 2
 
 def _write_remediation_log(settings: Settings, spark, incident_id: str, request_id: str,
-                            pipeline_name: str, agent_name: str, complexity: str,
-                            results: list[dict]) -> tuple[int, int]:
+                           pipeline_name: str, agent_name: str, complexity: str,
+                           results: list[dict]) -> tuple[int, int]:
     table = settings.table("remediation_log")
     if not results:
         return 0, 0
 
     from pyspark.sql.types import (
-        DoubleType, IntegerType, StringType, StructField, StructType,
+        DoubleType,
+        IntegerType,
+        StringType,
+        StructField,
+        StructType,
     )
 
     schema = StructType([
@@ -135,7 +136,11 @@ def _write_approval_request(settings: Settings, spark, incident: dict, d) -> str
     request_id = f"APR-{uuid.uuid4().hex[:8].upper()}"
 
     from pyspark.sql.types import (
-        BooleanType, IntegerType, StringType, StructField, StructType,
+        BooleanType,
+        IntegerType,
+        StringType,
+        StructField,
+        StructType,
     )
 
     schema = StructType([
@@ -227,8 +232,9 @@ def process_new_incidents(settings: Settings, spark, llm: LLMClient, gh: GitHubC
                     SET github_issue_number = {issue_number} WHERE request_id = '{request_id}'
                 """)
                 if settings.app_base_url:
-                    gh.comment(issue_number,
-                               f"[Review and approve this remediation]({settings.app_base_url}/requests/{request_id})")
+                    # The App lists every pending request on its home page.
+                    link = settings.app_base_url.rstrip("/")
+                    gh.comment(issue_number, f"Request {request_id}: [review and approve]({link})")
             spark.sql(f"""
                 UPDATE {table}
                 SET status = 'PENDING_APPROVAL', updated_at = current_timestamp()
