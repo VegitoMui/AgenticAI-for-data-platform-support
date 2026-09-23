@@ -39,7 +39,7 @@ targets:
     variables:
       schema: agentic_ai_dev
       watcher_interval_seconds: 60
-      warehouse_id: "REPLACE_WITH_DEV_WAREHOUSE_ID"
+      warehouse_id: "83e7e0259f5b1f02"
 
   prod:
     mode: production
