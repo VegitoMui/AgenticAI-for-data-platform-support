@@ -75,7 +75,7 @@ def diagnose(llm: LLMClient, raw_error: str, pipeline_name: str) -> Diagnosis:
     result = llm.chat_json(
         _PROMPT.format(error_text=raw_error, pipeline_name=pipeline_name),
         system_message="Pipeline diagnosis assistant. Return ONLY valid JSON.",
-        max_tokens=800,
+        max_tokens=2000,
     )
 
     if not result.ok or not result.parsed:

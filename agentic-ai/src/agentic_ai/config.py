@@ -15,6 +15,15 @@ from functools import cached_property
 
 from agentic_ai.secrets import SecretResolver
 
+# Default models. Each can be overridden without a code change by setting the
+# optional secret named alongside it, e.g. when a provider retires a model.
+# Groq retired llama-3.3-70b-versatile on 2026-08-16.
+DEFAULT_MODELS = {
+    "model-groq-1": "openai/gpt-oss-120b",
+    "model-groq-2": "qwen/qwen3.6-27b",
+    "model-openrouter": "nvidia/nemotron-3-super-120b-a12b:free",
+}
+
 
 @dataclass
 class LLMProvider:
@@ -33,9 +42,9 @@ class Settings:
     # Telemetry
     watcher_lookback_hours: int = 24
     watcher_batch_limit: int = 25
-    # Valid result_state values in system.lakeflow.job_run_timeline are
-    # SUCCESS, FAILED, TIMED_OUT, CANCELED, EXCLUDED, MAXIMUM_CONCURRENT_RUNS_REACHED.
-    # 'ERROR' is not one of them and matched nothing.
+    # The two detection sources spell states differently:
+    #   system.lakeflow.job_run_timeline -> FAILED, ERROR, CANCELLED
+    #   Jobs API (SDK RunResultState)    -> FAILED, TIMED_OUT, CANCELED
     failed_states: tuple[str, ...] = ("FAILED", "CANCELED", "CANCELLED", "ERROR", "TIMED_OUT")
     detection_source: str = "auto"  # system_tables | jobs_api | auto
 
@@ -63,28 +72,34 @@ class Settings:
 
     # ------------------------------------------------------------ credentials
 
+    def _model(self, key: str) -> str:
+        override = self._resolver.get(self.secret_scope, key, required=False)
+        return override or DEFAULT_MODELS[key]
+
     @cached_property
     def llm_providers(self) -> list[LLMProvider]:
+        """Tried in order; the client fails over to the next on any error or
+        empty reply. Groq first (fast, reliable), free OpenRouter last."""
         scope = self.secret_scope
         get = self._resolver.get
         return [
             LLMProvider(
-                name="OpenRouter (Primary)",
-                api_key=get(scope, "openrouter-api-key"),
-                base_url="https://openrouter.ai/api/v1",
-                model="nvidia/nemotron-3-super-120b-a12b:free",
-            ),
-            LLMProvider(
-                name="Groq Fallback-1",
+                name="Groq Primary",
                 api_key=get(scope, "groq-api-key-1"),
                 base_url="https://api.groq.com/openai/v1",
-                model="llama-3.3-70b-versatile",
+                model=self._model("model-groq-1"),
             ),
             LLMProvider(
-                name="Groq Fallback-2",
+                name="Groq Fallback",
                 api_key=get(scope, "groq-api-key-2"),
                 base_url="https://api.groq.com/openai/v1",
-                model="llama-3.3-70b-versatile",
+                model=self._model("model-groq-2"),
+            ),
+            LLMProvider(
+                name="OpenRouter Fallback",
+                api_key=get(scope, "openrouter-api-key"),
+                base_url="https://openrouter.ai/api/v1",
+                model=self._model("model-openrouter"),
             ),
         ]
 
