@@ -1,6 +1,7 @@
 resources:
   jobs:
     # Phase 1: polls system.lakeflow for newly failed runs and raises incidents.
+    # Paused to avoid cost: run manually from Workflows > Jobs > Run now.
     watcher:
       name: "[${bundle.target}] agentic-ai watcher"
       schedule:
@@ -29,7 +30,9 @@ resources:
           - ${var.approver_email}
 
     # Phase 2: diagnoses NEW incidents, routes to auto-execute or approval,
-    # executes approved requests, closes rejected ones, expires stale ones.
+    # executes approved requests, closes rejected ones, expires stale ones,
+    # and emails the approver.
+    # Paused to avoid cost: run manually from Workflows > Jobs > Run now.
     reconciler:
       name: "[${bundle.target}] agentic-ai reconciler"
       schedule:
@@ -79,6 +82,7 @@ resources:
   apps:
     # Phase 2: approve/reject UI. Runs under its own service principal,
     # provisioned by Databricks because a SQL warehouse is declared below.
+    # Stop it from Compute > Apps when not in use -- it bills while running.
     approvals:
       name: agentic-ai-approvals-${bundle.target}
       description: Approve or reject remediation actions proposed by the agentic system
