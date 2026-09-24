@@ -1,5 +1,5 @@
 """
-Reconciler: Phase 2 diagnosis, approval routing, and execution.
+Reconciler: Phase 2 diagnosis, approval routing, execution and notification.
 
 Runs on a schedule (default every 2 minutes). One pass does four things,
 in order:
@@ -12,9 +12,10 @@ in order:
   2. Diagnose NEW incidents. Each gets a Diagnosis (diagnosis.py). Based on
      needs_approval(), it is either:
        a) auto-executed immediately, remediation_log written, a GitHub issue
-          opened and immediately closed with the outcome, or
+          opened and closed with the outcome, and a "fix applied" email sent, or
        b) blocked: an approval_requests row is written, a GitHub issue is
-          opened and left open, incident status becomes PENDING_APPROVAL.
+          opened and left open, incident status becomes PENDING_APPROVAL,
+          and a "decision needed" email with the App link is sent.
 
   3. Execute approval_requests with status='approved' (set by the App UI,
      not by this job). Writes remediation_log, closes the GitHub issue,
@@ -24,8 +25,8 @@ in order:
      close the issue with the reviewer's note, update incident status,
      no execution.
 
-GitHub issue creation/closure failures are logged and swallowed -- they must
-never block remediation or approval processing.
+GitHub and email failures are logged and swallowed -- they must never block
+remediation or approval processing.
 """
 
 from __future__ import annotations
@@ -37,6 +38,7 @@ from datetime import datetime, timedelta, timezone
 
 from agentic_ai.config import Settings
 from agentic_ai.llm.client import LLMClient
+from agentic_ai.notify.mailer import EmailNotifier, decision_needed, fix_applied
 from agentic_ai.remediation import executor
 from agentic_ai.remediation.diagnosis import diagnose, needs_approval
 from agentic_ai.vcs.github import GitHubClient
@@ -189,14 +191,15 @@ def _issue_body(incident: dict, d) -> str:
     )
 
 
-def process_new_incidents(settings: Settings, spark, llm: LLMClient, gh: GitHubClient) -> dict:
+def process_new_incidents(settings: Settings, spark, llm: LLMClient, gh: GitHubClient,
+                          notifier: EmailNotifier | None = None) -> dict:
     table = settings.table("incidents")
     rows = spark.sql(f"""
         SELECT * FROM {table} WHERE status = 'NEW'
         ORDER BY created_at ASC LIMIT {settings.watcher_batch_limit}
     """).collect()
 
-    diagnosed, auto_executed, blocked = 0, 0, 0
+    diagnosed, auto_executed, blocked, emailed = 0, 0, 0, 0
 
     for row in rows:
         incident = row.asDict()
@@ -223,6 +226,8 @@ def process_new_incidents(settings: Settings, spark, llm: LLMClient, gh: GitHubC
             severity=d.severity,
         )
         issue_number = issue.get("number") if issue else None
+        issue_url = issue.get("html_url", "") if issue else ""
+        app_url = settings.app_base_url.rstrip("/") if settings.app_base_url else ""
 
         if needs_approval(d):
             request_id = _write_approval_request(settings, spark, incident, d)
@@ -231,15 +236,18 @@ def process_new_incidents(settings: Settings, spark, llm: LLMClient, gh: GitHubC
                     UPDATE {settings.table('approval_requests')}
                     SET github_issue_number = {issue_number} WHERE request_id = '{request_id}'
                 """)
-                if settings.app_base_url:
+                if app_url:
                     # The App lists every pending request on its home page.
-                    link = settings.app_base_url.rstrip("/")
-                    gh.comment(issue_number, f"Request {request_id}: [review and approve]({link})")
+                    gh.comment(issue_number, f"Request {request_id}: [review and approve]({app_url})")
             spark.sql(f"""
                 UPDATE {table}
                 SET status = 'PENDING_APPROVAL', updated_at = current_timestamp()
                 WHERE incident_id = '{incident_id}'
             """)
+            if notifier and notifier.send(decision_needed(
+                incident, d, request_id, app_url, settings.approval_expiry_hours, issue_url=issue_url,
+            )):
+                emailed += 1
             blocked += 1
             log.info("%s -> PENDING_APPROVAL (%s)", incident_id, request_id)
             continue
@@ -261,10 +269,12 @@ def process_new_incidents(settings: Settings, spark, llm: LLMClient, gh: GitHubC
                 comment=f"Auto-executed: {succeeded} action(s) succeeded, {failed} failed.",
                 reason="completed",
             )
+        if notifier and notifier.send(fix_applied(incident, d, results, issue_url=issue_url)):
+            emailed += 1
         auto_executed += 1
         log.info("%s -> %s (%s ok, %s failed)", incident_id, status, succeeded, failed)
 
-    return {"diagnosed": diagnosed, "auto_executed": auto_executed, "blocked": blocked}
+    return {"diagnosed": diagnosed, "auto_executed": auto_executed, "blocked": blocked, "emailed": emailed}
 
 
 # --------------------------------------------------------------------- step 3
@@ -353,9 +363,10 @@ def run_once(settings: Settings, spark=None) -> dict:
     spark = spark or _get_spark()
     llm = LLMClient.from_settings(settings)
     gh = GitHubClient.from_settings(settings)
+    notifier = EmailNotifier.from_settings(settings)
 
     expired = expire_stale_requests(settings, spark)
-    diag_stats = process_new_incidents(settings, spark, llm, gh)
+    diag_stats = process_new_incidents(settings, spark, llm, gh, notifier)
     approved = execute_approved(settings, spark, gh)
     rejected = close_rejected(settings, spark, gh)
 
@@ -364,6 +375,7 @@ def run_once(settings: Settings, spark=None) -> dict:
         **diag_stats,
         "approved_executed": approved,
         "rejected_closed": rejected,
+        "email_enabled": notifier is not None,
     }
     log.info("reconciler pass complete: %s", summary)
     return summary
