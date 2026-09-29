@@ -62,3 +62,17 @@ def test_invalid_llm_agent_is_ignored():
 def test_sql_task_type_nudges_analytics():
     scores, _ = score(_run("unclear", task_type="sql"))
     assert scores["analytics"] == 1
+
+
+
+def test_missing_table_routes_to_storage_despite_grpc_ssl_in_trace():
+    error = "[TABLE_OR_VIEW_NOT_FOUND] The table or view `c`.`s`.`t` cannot be found. SQLSTATE: 42P01"
+    trace = "File /site-packages/grpc/_channel.py in ssl_credentials\nAnalysisException"
+    r = route(_run(error, trace=trace), FakeLLM(), Trace("INC", "p"))
+    assert r.agent == "storage" and r.method == "rules"
+    assert r.scores["ingestion"] == 0
+
+
+def test_real_ingestion_ssl_error_still_scores():
+    scores, _ = score(_run("javax.net.ssl.SSLHandshakeException: certificate expired"))
+    assert scores["ingestion"] >= 3

@@ -40,6 +40,8 @@ _QUOTED_TABLE = re.compile(r"[`'\"]([A-Za-z_]\w*\.[A-Za-z_]\w*\.[A-Za-z_]\w*)[`'
 _SQL_TABLE = re.compile(
     r"(?i)\b(?:from|join|into|table|update)\s+`?([A-Za-z_]\w*\.[A-Za-z_]\w*\.[A-Za-z_]\w*)`?"
 )
+# Spark error messages quote each part separately: `cat`.`sch`.`tbl`
+_BACKTICK_PARTS = re.compile(r"`([A-Za-z_]\w*)`\.`([A-Za-z_]\w*)`\.`([A-Za-z_]\w*)`")
 # Dotted names that look like tables but are Python modules or Spark configs.
 _NOT_TABLE_PREFIXES = ("spark.", "pyspark.", "databricks.", "system.", "java.", "org.", "com.", "py4j.")
 FAILED_TASK_STATES = {"FAILED", "TIMEDOUT", "TIMED_OUT", "CANCELED", "CANCELLED", "ERROR", "INTERNAL_ERROR"}
@@ -206,7 +208,9 @@ def fetch_task_errors(w, run_id: str, ctx: RunContext) -> None:
 
 def extract_tables_from_code(text: str) -> list[str]:
     """Fully-qualified table names quoted or used after a SQL keyword."""
-    found = set(_QUOTED_TABLE.findall(text or "")) | set(_SQL_TABLE.findall(text or ""))
+    text = text or ""
+    found = set(_QUOTED_TABLE.findall(text)) | set(_SQL_TABLE.findall(text))
+    found |= {".".join(parts) for parts in _BACKTICK_PARTS.findall(text)}
     return sorted(n for n in found if not n.lower().startswith(_NOT_TABLE_PREFIXES))
 
 

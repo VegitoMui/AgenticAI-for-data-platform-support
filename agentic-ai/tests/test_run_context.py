@@ -125,3 +125,10 @@ def test_code_tables_reported_when_lineage_empty():
     assert ctx.lineage_scope == "none"
     assert ctx.tables == ["databricks_ws.agentic_ai_dev.incidents"]
     assert "Tables referenced in the failing code" in ctx.to_prompt()
+
+
+
+def test_backtick_per_part_names_are_extracted():
+    err = ("[TABLE_OR_VIEW_NOT_FOUND] The table or view "
+           "`databricks_ws`.`agentic_ai_dev`.`incidentz` cannot be found.")
+    assert extract_tables_from_code(err) == ["databricks_ws.agentic_ai_dev.incidentz"]

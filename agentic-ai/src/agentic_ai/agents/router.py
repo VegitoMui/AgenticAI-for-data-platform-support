@@ -37,7 +37,9 @@ MIN_CLEAR_SCORE = 3     # top score needed to skip the LLM
 MIN_CLEAR_MARGIN = 2    # lead over the runner-up needed to skip the LLM
 
 # (pattern, weight). Patterns are case-insensitive regexes over the error,
-# stack trace and job name.
+# stack trace and job name. Short tokens use word boundaries: Spark Connect
+# stack traces are full of library paths (grpc ssl_credentials, jdbc drivers)
+# that would otherwise score for the wrong agent.
 SIGNALS: dict[str, list[tuple[str, int]]] = {
     "processing": [
         (r"outofmemory|java heap space|gc overhead", STRONG),
@@ -60,8 +62,9 @@ SIGNALS: dict[str, list[tuple[str, int]]] = {
     "ingestion": [
         (r"\b429\b|rate limit|too many requests|throttl", STRONG),
         (r"connection (refused|reset|timed out)|unreachable|unknownhost|name resolution", STRONG),
-        (r"sockettimeout|read timed out|ssl|certificate", STRONG),
-        (r"cloudfiles|auto ?loader|jdbc|kafka|eventhub", STRONG),
+        (r"sockettimeout|read timed out|certificate (verify|expired)", STRONG),
+        (r"\bssl(exception| handshake|handshakeexception)\b", STRONG),
+        (r"\bcloudfiles\b|\bauto ?loader\b|\bjdbc\b|\bkafka\b|\beventhubs?\b", STRONG),
         (r"path does not exist|filenotfoundexception|no such file", WEAK),
         (r"\bapi\b|http(s)?://|status code", WEAK),
     ],
@@ -142,9 +145,11 @@ def route(run: RunContext, llm: LLMClient | None, trace: Trace) -> Route:
     else:
         r = _route_with_llm(run, llm, scores, top, top_score, matched)
 
+    matched_all = "; ".join(f"{a}: {', '.join(h)}" for a, h in hits.items() if h) or "none"
     trace.add(
         "classify",
-        f"{r.agent} via {r.method} (confidence {r.confidence:.2f}): {r.reason} | scores {r.scores}",
+        f"{r.agent} via {r.method} (confidence {r.confidence:.2f}): {r.reason} "
+        f"| scores {r.scores} | matched {matched_all}",
         sub_agent=r.agent,
         duration_sec=time.time() - start,
     )
