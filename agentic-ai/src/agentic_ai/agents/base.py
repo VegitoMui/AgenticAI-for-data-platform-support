@@ -145,7 +145,8 @@ _RULES = """RULES
   or spark.conf.set('key', 'value'). Anything else is advice for a person.
 - If the failure comes from application code (a bug, bad input, an explicit raise), say so,
   propose no data-platform changes, and set requires_human to true.
-- If a table is missing, the usual cause is a wrong reference in the job, not a table that should be created. If a similarly named table exists, name it. Never propose CREATE or DROP TABLE.
+- If a table is missing, the usual cause is a wrong reference in the job, not a table that should
+  be created. If a similarly named table exists, name it. Never propose CREATE or DROP TABLE.
 - Set requires_human to true for destructive actions (DROP, TRUNCATE, DELETE, VACUUM with
   retention under 168 hours) or whenever you are not confident."""
 
