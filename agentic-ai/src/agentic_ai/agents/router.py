@@ -62,6 +62,7 @@ SIGNALS: dict[str, list[tuple[str, int]]] = {
     "ingestion": [
         (r"\b429\b|rate limit|too many requests|throttl", STRONG),
         (r"connection (refused|reset|timed out)|unreachable|unknownhost|name resolution", STRONG),
+        (r"name or service not known|nodename nor servname|getaddrinfo failed|urlopen error", STRONG),
         (r"sockettimeout|read timed out|certificate (verify|expired)", STRONG),
         (r"\bssl(exception| handshake|handshakeexception)\b", STRONG),
         (r"\bcloudfiles\b|\bauto ?loader\b|\bjdbc\b|\bkafka\b|\beventhubs?\b", STRONG),

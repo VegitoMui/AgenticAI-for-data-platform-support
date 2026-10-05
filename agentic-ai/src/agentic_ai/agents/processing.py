@@ -50,6 +50,22 @@ _SQLSTATE = re.compile(r"SQLSTATE:\s*([0-9A-Z]{5})")
 _USER_LINE = re.compile(r"-{2,}>\s*\d+\s+(.+)")
 _USER_FRAME = re.compile(r"File <command-\d+>, line (\d+)|File (/Workspace/[^,]+), line (\d+)")
 
+def _user_failing_line(text: str) -> str:
+    """The '---->' line inside the job's own code (a notebook cell or a
+    /Workspace file), not one inside a library it called. Falls back to the
+    last '---->' line if no user frame is found."""
+    in_user_frame, user_line, any_line = False, "", ""
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("File "):
+            in_user_frame = bool(_USER_FRAME.match(stripped))
+            continue
+        m = _USER_LINE.search(line)
+        if m:
+            any_line = m.group(1).strip()
+            if in_user_frame:
+                user_line = any_line
+    return user_line or any_line
 
 def _workspace(tctx: ToolContext):
     if tctx.workspace_client is None:
@@ -89,14 +105,16 @@ def error_analysis(tctx: ToolContext) -> tuple[str, dict]:
         short = final.split(".")[-1]
         error_class = (_ERROR_CLASS.findall(text) or [""])[0]
         sqlstate = (_SQLSTATE.findall(text) or [""])[0]
-        user_lines = _USER_LINE.findall(text)
-        user_line = user_lines[-1].strip() if user_lines else ""
+        
+        user_line = _user_failing_line(text)
         in_user_code = bool(_USER_FRAME.search(text))
 
         if short in _APP_EXCEPTIONS and in_user_code:
             origin = "RAISED BY APPLICATION CODE"
         elif error_class or "java." in final or "spark" in final.lower() or "py4j" in text.lower():
             origin = "raised by the Spark engine"
+        elif in_user_code:
+            origin = "raised by a library called from the job's code"
         else:
             origin = "origin unclear"
 

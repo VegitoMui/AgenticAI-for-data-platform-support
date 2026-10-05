@@ -76,3 +76,11 @@ def test_missing_table_routes_to_storage_despite_grpc_ssl_in_trace():
 def test_real_ingestion_ssl_error_still_scores():
     scores, _ = score(_run("javax.net.ssl.SSLHandshakeException: certificate expired"))
     assert scores["ingestion"] >= 3
+
+
+
+
+def test_dns_failure_routes_to_ingestion():
+    error = "URLError: <urlopen error [Errno -2] Name or service not known>"
+    r = route(_run(error, trace="Traceback (most recent call last)"), FakeLLM(), Trace("INC", "p"))
+    assert r.agent == "ingestion" and r.method == "rules"

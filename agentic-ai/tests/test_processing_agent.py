@@ -148,3 +148,21 @@ def test_compute_profile_reports_retried_task_once():
     run = NS(tasks=[attempt, attempt], job_clusters=[])
     summary, _ = compute_profile(_tctx(w=NS(jobs=FakeJobs(run=run))))
     assert summary.count("task 'load'") == 1
+
+
+
+def test_failing_line_comes_from_user_frame_not_library():
+    trace = (
+        "URLError                                  Traceback (most recent call last)\n"
+        "File <command-123>, line 2\n"
+        "      1 import urllib.request\n"
+        "----> 2 urllib.request.urlopen('https://orders-api.example.invalid/v1', timeout=10)\n"
+        "File /usr/lib/python3.12/urllib/request.py:215, in urlopen(url)\n"
+        "--> 215 return opener.open(url, data, timeout)\n"
+        "File /usr/lib/python3.12/urllib/request.py:1347, in do_open\n"
+        "-> 1347 raise URLError(err)\n"
+        "URLError: <urlopen error [Errno -2] Name or service not known>"
+    )
+    summary, data = error_analysis(_tctx(error="URLError", trace=trace))
+    assert data["load"]["user_line"].startswith("urllib.request.urlopen(")
+    assert "raised by a library called from the job's code" in summary
