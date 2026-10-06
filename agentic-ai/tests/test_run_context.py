@@ -132,3 +132,33 @@ def test_backtick_per_part_names_are_extracted():
     err = ("[TABLE_OR_VIEW_NOT_FOUND] The table or view "
            "`databricks_ws`.`agentic_ai_dev`.`incidentz` cannot be found.")
     assert extract_tables_from_code(err) == ["databricks_ws.agentic_ai_dev.incidentz"]
+
+
+
+
+def test_tables_read_from_notebook_source_when_error_names_none():
+    import base64
+
+    from agentic_ai.telemetry.run_context import RunContext, TaskError, fetch_source_tables
+
+    src = (b"# Databricks notebook source\n"
+           b"spark.sql('SELECT custmer_id FROM databricks_ws.agentic_ai_dev.incidents')")
+    exported = {}
+
+    class FakeWorkspace:
+        def export(self, path, format):
+            exported[path] = format
+            if path.endswith("missing"):
+                raise RuntimeError("RESOURCE_DOES_NOT_EXIST")
+            return NS(content=base64.b64encode(src).decode())
+
+    ctx = RunContext(job_id="1", run_id="2", job_name="p", task_errors=[
+        TaskError("a", "3", "FAILED", "notebook /Users/me/probe", error="[UNRESOLVED_COLUMN] x"),
+        TaskError("b", "4", "FAILED", "notebook /Users/me/missing"),
+        TaskError("c", "5", "FAILED", "notebook relative/git/path"),
+        TaskError("d", "6", "FAILED", "sql"),
+    ])
+    found = fetch_source_tables(NS(workspace=FakeWorkspace()), ctx)
+    assert found == ["databricks_ws.agentic_ai_dev.incidents"]
+    assert set(exported) == {"/Users/me/probe", "/Users/me/missing"}
+    assert any("source read failed for /Users/me/missing" in n for n in ctx.notes)

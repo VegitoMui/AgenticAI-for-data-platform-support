@@ -45,7 +45,7 @@ _APP_EXCEPTIONS = {
     "FileNotFoundError", "ImportError", "ModuleNotFoundError", "UnboundLocalError",
 }
 _EXCEPTION = re.compile(r"\b((?:[a-z_][\w]*\.)*[A-Z]\w*(?:Exception|Error))\b")
-_ERROR_CLASS = re.compile(r"\[([A-Z][A-Z0-9_]{3,})\]")
+_ERROR_CLASS = re.compile(r"\[([A-Z][A-Z0-9_]{3,}(?:\.[A-Z0-9_]+)?)\]")
 _SQLSTATE = re.compile(r"SQLSTATE:\s*([0-9A-Z]{5})")
 _USER_LINE = re.compile(r"-{2,}>\s*\d+\s+(.+)")
 _USER_FRAME = re.compile(r"File <command-\d+>, line (\d+)|File (/Workspace/[^,]+), line (\d+)")

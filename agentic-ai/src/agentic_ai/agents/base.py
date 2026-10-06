@@ -24,6 +24,7 @@ A concrete agent only declares its sub-agents and tools.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -38,6 +39,7 @@ log = logging.getLogger(__name__)
 
 MAX_EVIDENCE_CHARS = 1200      # per tool, in the prompt
 MAX_EVIDENCE_TOTAL = 8000      # all tools together, in the prompt
+_ACCESS_CHANGE = re.compile(r"^\s*(GRANT|REVOKE)\b", re.I)
 
 
 # ------------------------------------------------------------------ types
@@ -121,14 +123,18 @@ def diagnosis_from_result(result, agent_name: str) -> Diagnosis:
     except (TypeError, ValueError):
         confidence = 0.0
 
+    actions = [str(a) for a in (p.get("actions") or []) if str(a).strip()][:10]
+    # Permission changes are never applied without a person, whatever the LLM says.
+    changes_access = any(_ACCESS_CHANGE.match(a) for a in actions)
+
     return Diagnosis(
         agent_name=agent_name,
         diagnosis=str(p.get("diagnosis", ""))[:800],
         severity=severity,
         fix_complexity=complexity,
         fix_suggestion=str(p.get("fix_suggestion", ""))[:500],
-        requires_human=bool(p.get("requires_human", True)),
-        actions=[str(a) for a in (p.get("actions") or []) if str(a).strip()][:10],
+        requires_human=bool(p.get("requires_human", True)) or changes_access,
+        actions=actions,
         confidence=confidence,
         provider=getattr(result, "provider", "unknown"),
     )
@@ -148,7 +154,7 @@ _RULES = """RULES
 - If a table is missing, the usual cause is a wrong reference in the job, not a table that should
   be created. If a similarly named table exists, name it. Never propose CREATE or DROP TABLE.
 - Set requires_human to true for destructive actions (DROP, TRUNCATE, DELETE, VACUUM with
-  retention under 168 hours) or whenever you are not confident."""
+  retention under 168 hours), for any GRANT or REVOKE, or whenever you are not confident."""
 
 _SCHEMA = """Return ONLY this JSON:
 {{

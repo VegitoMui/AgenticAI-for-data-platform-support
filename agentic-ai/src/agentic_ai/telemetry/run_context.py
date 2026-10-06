@@ -11,7 +11,8 @@ this module gathers what actually happened:
                 system.access.table_lineage. Lineage lags by minutes to hours,
                 so it falls back to tables this job touched in recent runs.
   code tables   Fully-qualified table names found in the error text and stack
-                trace (e.g. spark.table('cat.sch.tbl')). Always available the
+                trace (e.g. spark.table('cat.sch.tbl')), then in the source of
+                each failed notebook or Python-file task. Always available the
                 moment the run fails, labelled separately because it is weaker
                 evidence than lineage.
 
@@ -32,6 +33,8 @@ log = logging.getLogger(__name__)
 MAX_ERROR_CHARS = 1500
 MAX_TRACE_CHARS = 3000
 LINEAGE_FALLBACK_DAYS = 30
+MAX_SOURCE_BYTES = 500_000      # largest notebook / file source scanned for table names
+MAX_SOURCE_TABLES = 10
 # Notebook tracebacks carry ANSI colour codes; they waste LLM tokens and
 # clutter the App and email, so they are stripped.
 _ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
@@ -214,6 +217,42 @@ def extract_tables_from_code(text: str) -> list[str]:
     return sorted(n for n in found if not n.lower().startswith(_NOT_TABLE_PREFIXES))
 
 
+def _source_path(task_type: str) -> str:
+    """Workspace path of a notebook or Python-file task, else ''."""
+    kind, _, path = task_type.partition(" ")
+    if kind in ("notebook", "python") and path.startswith("/") and not path.startswith("/dbfs"):
+        return path
+    return ""
+
+
+def fetch_source_tables(w, ctx: RunContext) -> list[str]:
+    """Table names in the source of each failed notebook / Python-file task.
+
+    Spark Connect errors (e.g. UNRESOLVED_COLUMN) often carry only a JVM stack
+    trace with no user code, so the error text alone may name no table.
+    Reading the task's source fills that gap. Tasks from Git sources (relative
+    paths) are skipped.
+    """
+    import base64
+
+    from databricks.sdk.service.workspace import ExportFormat
+
+    found: list[str] = []
+    for path in dict.fromkeys(_source_path(t.task_type) for t in ctx.task_errors):
+        if not path:
+            continue
+        try:
+            content = w.workspace.export(path, format=ExportFormat.SOURCE).content or ""
+            source = base64.b64decode(content)[:MAX_SOURCE_BYTES].decode("utf-8", "replace")
+        except Exception as exc:
+            ctx.notes.append(f"source read failed for {path}: {str(exc)[:200]}")
+            continue
+        for name in extract_tables_from_code(source):
+            if name not in found:
+                found.append(name)
+    return found[:MAX_SOURCE_TABLES]
+
+
 def _lineage_rows(spark, where: str) -> list:
     return spark.sql(f"""
         SELECT DISTINCT source_table_full_name AS src, target_table_full_name AS tgt
@@ -269,9 +308,12 @@ def build_run_context(settings: Settings, incident: dict, workspace_client=None,
         spark = SparkSession.builder.getOrCreate()
 
     fetch_task_errors(workspace_client, run_id, ctx)
-    ctx.tables_from_code = extract_tables_from_code(
+    from_error = extract_tables_from_code(
         "\n".join(f"{t.error}\n{t.error_trace}" for t in ctx.task_errors)
     )
+    # Names in the error come first: they point at the failing statement.
+    from_source = fetch_source_tables(workspace_client, ctx)
+    ctx.tables_from_code = from_error + [n for n in from_source if n not in from_error]
     if job_id:
         fetch_lineage(spark, job_id, run_id, ctx)
 

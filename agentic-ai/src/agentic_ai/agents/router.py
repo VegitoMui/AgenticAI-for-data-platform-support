@@ -73,7 +73,9 @@ SIGNALS: dict[str, list[tuple[str, int]]] = {
         (r"insufficient_permissions|permission_denied|access denied|forbidden|\b403\b", STRONG),
         (r"sql warehouse|dashboard|lakeview|genie", STRONG),
         (r"full (table )?scan|query (timed out|timeout)|statement timeout", STRONG),
-        (r"unresolved_column|cannot resolve|ambiguous reference", WEAK),
+        (r"unresolved_(column|routine|field|map_key)|cannot be resolved|cannot resolve\s+['`]", STRONG),
+        (r"parse_syntax_error|datatype_mismatch|cast_invalid_input|ambiguous_reference", STRONG),
+        (r"sqlstate:?\s*(42703|42601|42883|42k09)", WEAK),
     ],
 }
 
