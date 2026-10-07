@@ -140,7 +140,9 @@ TABLES: list[tuple[str, str, list[str]]] = [
         total_latency_sec           DOUBLE,
         created_at                  TIMESTAMP
         """,
-        [],
+        # Which model produced the embedding, so vectors from different
+        # models are never compared with each other.
+        ["embedding_model STRING"],
     ),
 
     # -------------------------------------------------------- execution trace
@@ -177,9 +179,14 @@ def apply_all(settings: Settings, spark=None) -> dict[str, int]:
         created += 1
         log.info("table ready: %s", fq)
 
+        # Databricks has no ADD COLUMNS IF NOT EXISTS, so add only the missing ones.
+        existing = {c.lower() for c in spark.table(fq).columns} if alters else set()
         for clause in alters:
+            column = clause.split()[0].strip("`").lower()
+            if column in existing:
+                continue
             try:
-                spark.sql(f"ALTER TABLE {fq} ADD COLUMNS IF NOT EXISTS ({clause})")
+                spark.sql(f"ALTER TABLE {fq} ADD COLUMNS ({clause})")
                 altered += 1
             except Exception as exc:
                 log.warning("alter skipped on %s (%s): %s", fq, clause, str(exc)[:160])
