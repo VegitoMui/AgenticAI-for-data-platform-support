@@ -11,6 +11,8 @@ Spark session.
 
 Layout: a queue of pending requests on the left, the selected request in
 detail on the right (?id=APR-...), and a short list of recent decisions.
+The detail view also shows how the agent reached its diagnosis, read from
+subagent_execution_log.
 """
 
 from __future__ import annotations
@@ -180,6 +182,41 @@ def shape_request(r: dict) -> dict:
     }
 
 
+_STEP_LABELS = {"classify": "Routing", "select_subagent": "Sub-agent", "memory": "Memory",
+                "reason": "Conclusion"}
+
+
+def shape_trace(rows: list[dict]) -> list[dict]:
+    """The latest diagnosis pass for an incident, as labelled steps.
+    A retried incident can have several passes; only the newest is shown."""
+    if not rows:
+        return []
+    latest = max(_as_utc(r.get("logged_at")) or datetime.min.replace(tzinfo=timezone.utc) for r in rows)
+    steps = []
+    for r in sorted(rows, key=lambda r: r.get("step_number") or 0):
+        if (_as_utc(r.get("logged_at")) or latest) != latest:
+            continue
+        node = str(r.get("node_name") or "")
+        label = f"Tool: {node.split(':', 1)[1]}" if node.startswith("tool:") else _STEP_LABELS.get(node, node)
+        detail = str(r.get("detail") or "")
+        if node.startswith("tool:") and detail.startswith("["):
+            detail = detail.split("] ", 1)[-1]          # drop the "[tool_name]" prefix
+        steps.append({"label": label, "detail": detail, "failed": "(FAILED)" in detail[:12]})
+    return steps
+
+
+def load_trace(incident_id: str) -> list[dict]:
+    """Best-effort: the App still works if the trace table is missing or unreadable."""
+    try:
+        return shape_trace(run_query(
+            f"SELECT step_number, node_name, detail, logged_at FROM {table('subagent_execution_log')} "
+            f"WHERE incident_id = ? ORDER BY logged_at DESC, step_number LIMIT 60",
+            (incident_id,),
+        ))
+    except Exception:
+        return []
+
+
 DECISION_TEXT = {
     "approved": "Approved, waiting to run",
     "APPROVED_EXECUTED": "Approved and run",
@@ -218,6 +255,8 @@ def index(request: Request, id: str | None = None, done: str | None = None, ref:
     selected = next((p for p in pending if p["request_id"] == id), None)
     if selected is None and pending:
         selected = pending[0]
+    if selected is not None:
+        selected["trace"] = load_trace(selected["incident_id"])
 
     notice = None
     if done in ("approved", "rejected") and ref:

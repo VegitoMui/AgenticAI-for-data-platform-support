@@ -1,5 +1,5 @@
 """
-Reconciler: Phase 2 diagnosis, approval routing, execution and notification.
+Reconciler: agent diagnosis, approval routing, execution and notification.
 
 Runs on a schedule (default every 2 minutes). One pass does four things,
 in order:
@@ -9,8 +9,10 @@ in order:
      the request EXPIRED so it stops waiting and the incident is visibly
      stuck rather than silently ignored.
 
-  2. Diagnose NEW incidents. Each gets a Diagnosis (diagnosis.py). Based on
-     needs_approval(), it is either:
+  2. Diagnose NEW incidents with the specialist agents (agents/orchestrator.py:
+     run context, router, memory, agent tools, trace). If that path fails,
+     the Phase 2 single-call diagnose() is used instead. Based on
+     needs_approval(), each incident is either:
        a) auto-executed immediately, remediation_log written, a GitHub issue
           opened and closed with the outcome, and a "fix applied" email sent, or
        b) blocked: an approval_requests row is written, a GitHub issue is
@@ -25,8 +27,11 @@ in order:
      close the issue with the reviewer's note, update incident status,
      no execution.
 
-GitHub and email failures are logged and swallowed -- they must never block
-remediation or approval processing.
+Every outcome is also written to incident memory (step 2) and updated when
+it changes (steps 1, 3 and 4), so later diagnoses can learn from it.
+
+GitHub, email and memory failures are logged and swallowed -- they must never
+block remediation or approval processing.
 """
 
 from __future__ import annotations
@@ -36,8 +41,10 @@ import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 
+from agentic_ai.agents.orchestrator import diagnose_incident, remember_outcome
 from agentic_ai.config import Settings
 from agentic_ai.llm.client import LLMClient
+from agentic_ai.memory.store import update_outcome
 from agentic_ai.notify.mailer import EmailNotifier, decision_needed, fix_applied
 from agentic_ai.remediation import executor
 from agentic_ai.remediation.diagnosis import diagnose, needs_approval
@@ -80,6 +87,8 @@ def expire_stale_requests(settings: Settings, spark) -> int:
             SET status = 'EXPIRED', updated_at = current_timestamp()
             WHERE incident_id = '{row['incident_id']}'
         """)
+        update_outcome(settings, spark, row["incident_id"], "EXPIRED",
+                       f"no decision within {settings.approval_expiry_hours}h")
     log.info("expired %s stale approval request(s)", len(stale))
     return len(stale)
 
@@ -179,20 +188,35 @@ def _write_approval_request(settings: Settings, spark, incident: dict, d) -> str
     return request_id
 
 
-def _issue_body(incident: dict, d) -> str:
+def _issue_body(incident: dict, d, analysis: list[str] | None = None) -> str:
     actions = "\n".join(f"- `{a}`" for a in d.actions) or "(no concrete actions proposed)"
-    return (
+    body = (
         f"**Pipeline:** {incident['pipeline_name']}\n"
         f"**Detected via:** {incident.get('detection_source', 'unknown')}\n"
         f"**Result state:** {incident.get('result_state', 'unknown')}\n\n"
-        f"**Diagnosis** (confidence {d.confidence:.2f}, {d.provider}):\n{d.diagnosis}\n\n"
+        f"**Diagnosis** (confidence {d.confidence:.2f}, {d.provider}, {d.toolkit_used}):\n{d.diagnosis}\n\n"
         f"**Proposed actions:**\n{actions}\n\n"
         f"**Fix complexity:** {d.fix_complexity}"
     )
+    if analysis:
+        body += "\n\n**How the agent reached this:**\n```\n" + "\n".join(analysis) + "\n```"
+    return body
+
+
+def _diagnose(settings: Settings, spark, llm: LLMClient, workspace_client, incident: dict):
+    """Specialist agents first; the Phase 2 single LLM call if they fail.
+    Returns (Diagnosis, AgentOutcome or None). Raises only if both fail."""
+    try:
+        outcome = diagnose_incident(settings, spark, llm, workspace_client, incident)
+        return outcome.diagnosis, outcome
+    except Exception:
+        log.exception("agent diagnosis failed for %s -- falling back to single-call diagnosis",
+                      incident["incident_id"])
+    return diagnose(llm, incident["raw_error"], incident["pipeline_name"]), None
 
 
 def process_new_incidents(settings: Settings, spark, llm: LLMClient, gh: GitHubClient,
-                          notifier: EmailNotifier | None = None) -> dict:
+                          notifier: EmailNotifier | None = None, workspace_client=None) -> dict:
     table = settings.table("incidents")
     rows = spark.sql(f"""
         SELECT * FROM {table} WHERE status = 'NEW'
@@ -206,10 +230,11 @@ def process_new_incidents(settings: Settings, spark, llm: LLMClient, gh: GitHubC
         incident_id = incident["incident_id"]
 
         try:
-            d = diagnose(llm, incident["raw_error"], incident["pipeline_name"])
+            d, outcome = _diagnose(settings, spark, llm, workspace_client, incident)
         except Exception:
             log.exception("diagnosis failed for %s -- leaving as NEW for retry", incident_id)
             continue
+        analysis = outcome.analysis_lines() if outcome else []
 
         diagnosed += 1
         spark.sql(f"""
@@ -221,7 +246,7 @@ def process_new_incidents(settings: Settings, spark, llm: LLMClient, gh: GitHubC
 
         issue = gh.create_issue(
             title=f"[{d.agent_name}] {incident['pipeline_name']}: {d.fix_suggestion[:80]}",
-            body=_issue_body(incident, d),
+            body=_issue_body(incident, d, analysis),
             incident_id=incident_id,
             severity=d.severity,
         )
@@ -244,8 +269,11 @@ def process_new_incidents(settings: Settings, spark, llm: LLMClient, gh: GitHubC
                 SET status = 'PENDING_APPROVAL', updated_at = current_timestamp()
                 WHERE incident_id = '{incident_id}'
             """)
+            if outcome:
+                remember_outcome(settings, spark, incident, outcome, "PENDING_APPROVAL")
             if notifier and notifier.send(decision_needed(
                 incident, d, request_id, app_url, settings.approval_expiry_hours, issue_url=issue_url,
+                analysis=analysis,
             )):
                 emailed += 1
             blocked += 1
@@ -269,7 +297,10 @@ def process_new_incidents(settings: Settings, spark, llm: LLMClient, gh: GitHubC
                 comment=f"Auto-executed: {succeeded} action(s) succeeded, {failed} failed.",
                 reason="completed",
             )
-        if notifier and notifier.send(fix_applied(incident, d, results, issue_url=issue_url)):
+        if outcome:
+            remember_outcome(settings, spark, incident, outcome, status)
+        if notifier and notifier.send(fix_applied(incident, d, results, issue_url=issue_url,
+                                                  analysis=analysis)):
             emailed += 1
         auto_executed += 1
         log.info("%s -> %s (%s ok, %s failed)", incident_id, status, succeeded, failed)
@@ -313,6 +344,8 @@ def execute_approved(settings: Settings, spark, gh: GitHubClient) -> int:
             SET status = '{status}', updated_at = current_timestamp()
             WHERE incident_id = '{req['incident_id']}'
         """)
+        update_outcome(settings, spark, req["incident_id"], status,
+                       f"approved by {req.get('reviewed_by') or 'unknown'}; {succeeded} ok, {failed} failed")
         if req.get("github_issue_number"):
             gh.close_issue(
                 int(req["github_issue_number"]),
@@ -347,6 +380,9 @@ def close_rejected(settings: Settings, spark, gh: GitHubClient) -> int:
             SET status = 'REJECTED', updated_at = current_timestamp()
             WHERE incident_id = '{req['incident_id']}'
         """)
+        update_outcome(settings, spark, req["incident_id"], "REJECTED",
+                       f"rejected by {req.get('reviewed_by') or 'unknown'}: "
+                       f"{req.get('reviewer_notes') or 'no notes provided'}")
         if req.get("github_issue_number"):
             gh.close_issue(
                 int(req["github_issue_number"]),
@@ -364,9 +400,12 @@ def run_once(settings: Settings, spark=None) -> dict:
     llm = LLMClient.from_settings(settings)
     gh = GitHubClient.from_settings(settings)
     notifier = EmailNotifier.from_settings(settings)
+    from databricks.sdk import WorkspaceClient
+
+    workspace_client = WorkspaceClient()
 
     expired = expire_stale_requests(settings, spark)
-    diag_stats = process_new_incidents(settings, spark, llm, gh, notifier)
+    diag_stats = process_new_incidents(settings, spark, llm, gh, notifier, workspace_client)
     approved = execute_approved(settings, spark, gh)
     rejected = close_rejected(settings, spark, gh)
 

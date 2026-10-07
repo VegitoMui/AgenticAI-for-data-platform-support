@@ -132,6 +132,15 @@
   .facts dd.soon { color: var(--warn); }
   .facts .wide { grid-column: 1 / -1; }
 
+  /* ---------------------------------------------------------- reasoning */
+  .reasoning { margin: 0 0 28px; }
+  .reasoning summary { cursor: pointer; font-weight: 600; font-size: 15px; padding: 4px 0; }
+  .reasoning ol { list-style: none; margin: 10px 0 0; padding: 0; border-left: 2px solid var(--rule); }
+  .reasoning li { padding: 6px 0 6px 14px; font-size: 14px; }
+  .reasoning .lbl { display: block; font-size: 12px; color: var(--muted); }
+  .reasoning .txt { overflow-wrap: anywhere; color: #2F3B47; }
+  .reasoning li.failed .txt { color: var(--stop); }
+
   /* The execution plan: the one place the page spends its boldness. */
   .plan h3 { font-size: 17px; margin: 0 0 4px; }
   .plan .lede { color: var(--muted); margin: 0 0 16px; font-size: 14px; }
@@ -290,6 +299,20 @@
         <div><dt>Request</dt><dd>{{ s.request_id }}</dd></div>
         {% if s.github_issue_number %}<div><dt>Ticket</dt><dd>#{{ s.github_issue_number }}</dd></div>{% endif %}
       </dl>
+
+      {% if s.trace %}
+      <details class="reasoning">
+        <summary>How the agent reached this ({{ s.trace|length }} steps)</summary>
+        <ol>
+          {% for t in s.trace %}
+          <li class="{{ 'failed' if t.failed }}">
+            <span class="lbl">{{ t.label }}</span>
+            <span class="txt">{{ t.detail }}</span>
+          </li>
+          {% endfor %}
+        </ol>
+      </details>
+      {% endif %}
 
       <section class="plan">
         <h3>What happens if you approve</h3>

@@ -9,6 +9,9 @@ Two messages, one per outcome of the approval gate:
                    approvals App. Decisions are made in the App, never by
                    replying to the email.
 
+Both can carry the agent's analysis: how it routed, which tools it ran and
+what they found, and similar past incidents.
+
 Building a message is pure (easy to test). Sending failures are logged and
 swallowed: a notification must never block remediation or approvals.
 """
@@ -82,6 +85,12 @@ class EmailNotifier:
 
 # ------------------------------------------------------------------ messages
 
+def _analysis(lines: list[str], analysis: list[str] | None) -> None:
+    if analysis:
+        lines += ["", "How the agent reached this:"]
+        lines += [f"  {a}" for a in analysis]
+
+
 def _steps(lines: list[str], actions: list[str]) -> None:
     if not actions:
         lines.append("  No steps were proposed.")
@@ -90,7 +99,8 @@ def _steps(lines: list[str], actions: list[str]) -> None:
         lines.append(f"  {i}. {action}")
 
 
-def fix_applied(incident: dict, d, results: list[dict], issue_url: str = "") -> Email:
+def fix_applied(incident: dict, d, results: list[dict], issue_url: str = "",
+                analysis: list[str] | None = None) -> Email:
     succeeded = sum(1 for r in results if r["execution_status"] == "SUCCESS")
     failed = sum(1 for r in results if r["execution_status"] == "FAILED")
     skipped = len(results) - succeeded - failed
@@ -115,15 +125,17 @@ def fix_applied(incident: dict, d, results: list[dict], issue_url: str = "") -> 
     lines += [
         "",
         f"Result: {succeeded} succeeded, {failed} failed, {skipped} skipped.",
-        f"Incident: {incident['incident_id']}",
     ]
+    _analysis(lines, analysis)
+    lines += ["", f"Incident: {incident['incident_id']}"]
     if issue_url:
         lines.append(f"Ticket: {issue_url}")
     return Email(subject=f"{SUBJECT_PREFIX} {headline}: {pipeline}", body="\n".join(lines))
 
 
 def decision_needed(incident: dict, d, request_id: str, app_url: str, expiry_hours: int,
-                    confidence_threshold: float = 0.6, issue_url: str = "") -> Email:
+                    confidence_threshold: float = 0.6, issue_url: str = "",
+                    analysis: list[str] | None = None) -> Email:
     pipeline = incident["pipeline_name"]
 
     reasons = []
@@ -146,6 +158,7 @@ def decision_needed(incident: dict, d, request_id: str, app_url: str, expiry_hou
         "Proposed steps:",
     ]
     _steps(lines, d.actions)
+    _analysis(lines, analysis)
     lines.append("")
     if app_url:
         lines.append(f"Review and decide: {app_url}")
