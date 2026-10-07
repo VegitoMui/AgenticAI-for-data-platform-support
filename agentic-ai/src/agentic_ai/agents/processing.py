@@ -137,8 +137,15 @@ def run_history(tctx: ToolContext) -> tuple[str, dict]:
     job_id, run_id = tctx.run.job_id, tctx.run.run_id
     if not job_id:
         return "No job id; run history unavailable.", {}
-    runs = list(_workspace(tctx).jobs.list_runs(job_id=int(job_id), completed_only=True,
-                                                limit=RUN_HISTORY_LIMIT))
+    try:
+        runs = list(_workspace(tctx).jobs.list_runs(job_id=int(job_id), completed_only=True,
+                                                    limit=RUN_HISTORY_LIMIT))
+    except Exception as exc:
+        # A job deleted after it failed has no history left; that is a finding, not a tool failure.
+        if "does not exist" in str(exc).lower():
+            return (f"Job {job_id} no longer exists (deleted after this failure), so no run history "
+                    "is available.", {"job_deleted": True})
+        raise
     if not runs:
         return "No completed runs found for this job.", {}
 
@@ -276,3 +283,32 @@ class ProcessingAgent(BaseAgent):
                                 compute_profile),
         "table_layout": Tool("table_layout", "DESCRIBE DETAIL of the tables involved", table_detail),
     }
+
+
+
+def test_run_history_reports_a_deleted_job_instead_of_failing():
+    from types import SimpleNamespace as NS
+
+    from agentic_ai.agents.base import ToolContext
+    from agentic_ai.agents.processing import run_history
+    from agentic_ai.config import Settings
+    from agentic_ai.telemetry.run_context import RunContext
+
+    class Jobs:
+        def __init__(self, message):
+            self.message = message
+
+        def list_runs(self, **kwargs):
+            raise RuntimeError(self.message)
+
+    def tctx(message):
+        return ToolContext(Settings(), RunContext("720091", "1", "probe"),
+                           workspace_client=NS(jobs=Jobs(message)))
+
+    summary, data = run_history(tctx("Job 720091 does not exist."))
+    assert "no longer exists" in summary and data == {"job_deleted": True}
+
+    import pytest
+
+    with pytest.raises(RuntimeError):
+        run_history(tctx("PERMISSION_DENIED"))
