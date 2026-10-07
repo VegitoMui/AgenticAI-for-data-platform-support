@@ -96,6 +96,7 @@ def test_issue_body_and_emails_carry_the_analysis():
 def test_app_shows_only_the_latest_trace_pass():
     pytest.importorskip("fastapi")
     pytest.importorskip("jinja2")
+    pytest.importorskip("python_multipart")     # the App's Form() routes need it at import time
     import sys
     from pathlib import Path
 
