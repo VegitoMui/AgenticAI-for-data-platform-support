@@ -42,3 +42,117 @@ def test_detection_source_defaults_to_auto():
 
 def test_approval_expiry_is_72_hours():
     assert Settings().approval_expiry_hours == 72
+
+
+
+# ------------------------------------------------------------------ LLM providers
+
+class _Secrets:
+    def __init__(self, values):
+        self.values = values
+
+    def get(self, scope, key, required=True):
+        return self.values.get(key, "")
+
+
+def _settings(**values):
+    return Settings(_resolver=_Secrets(values))
+
+
+FOUNDRY = {"foundry-endpoint": "https://airo-ai.openai.azure.com/",
+           "foundry-api-key": "k", "foundry-deployment": "gpt-6-1-luna"}
+
+
+def test_foundry_base_url_accepts_any_portal_form():
+    from agentic_ai.config import foundry_base_url
+
+    expected = "https://airo-ai.openai.azure.com/openai/v1/"
+    assert foundry_base_url("https://airo-ai.openai.azure.com") == expected
+    assert foundry_base_url("https://airo-ai.openai.azure.com/openai/v1/") == expected
+    assert foundry_base_url("https://airo-ai.openai.azure.com/openai/deployments/luna/chat/completions"
+                            "?api-version=2025-01-01-preview") == expected
+    assert foundry_base_url("https://airo.services.ai.azure.com/api/projects/p") == \
+        "https://airo.services.ai.azure.com/openai/v1/"
+
+
+def test_foundry_is_primary_and_fallbacks_are_optional():
+    providers = _settings(**FOUNDRY, **{"groq-api-key-1": "g"}).llm_providers
+    assert [p.name for p in providers] == ["Azure AI Foundry", "Groq Primary"]
+    assert providers[0].model == "gpt-6-1-luna" and providers[0].reasoning is True
+    assert providers[1].reasoning is False
+
+    only = _settings(**FOUNDRY, **{"foundry-reasoning": "false"}).llm_providers
+    assert len(only) == 1 and only[0].reasoning is False
+def test_no_provider_configured_raises():
+    import pytest
+
+    from agentic_ai.config import NoLLMConfigured
+
+    with pytest.raises(NoLLMConfigured):
+        _ = _settings().llm_providers
+    with pytest.raises(NoLLMConfigured):            # Foundry needs all three secrets
+        _ = _settings(**{"foundry-endpoint": "https://x.openai.azure.com"}).llm_providers
+
+
+
+
+# ------------------------------------------------------------------ LLM providers
+
+class _Secrets:
+    def __init__(self, values):
+        self.values = values
+
+    def get(self, scope, key, required=True):
+        return self.values.get(key, "")
+
+
+def _settings(**values):
+    return Settings(_resolver=_Secrets(values))
+
+
+FOUNDRY = {"foundry-endpoint": "https://airo-ai.openai.azure.com/",
+           "foundry-api-key": "k", "foundry-deployment": "gpt-6-1-luna"}
+
+
+def test_foundry_base_url_accepts_any_portal_form():
+    from agentic_ai.config import foundry_base_url
+
+    expected = "https://airo-ai.openai.azure.com/openai/v1/"
+    assert foundry_base_url("https://airo-ai.openai.azure.com") == expected
+    assert foundry_base_url("https://airo-ai.openai.azure.com/openai/v1/") == expected
+    assert foundry_base_url("https://airo-ai.openai.azure.com/openai/deployments/luna/chat/completions"
+                            "?api-version=2025-01-01-preview") == expected
+    assert foundry_base_url("https://airo.services.ai.azure.com/api/projects/p") == \
+        "https://airo.services.ai.azure.com/openai/v1/"
+
+
+def test_foundry_is_primary_and_fallbacks_are_optional():
+    providers = _settings(**FOUNDRY, **{"groq-api-key-1": "g"}).llm_providers
+    assert [p.name for p in providers] == ["Azure AI Foundry", "Groq Primary"]
+    assert providers[0].model == "gpt-6-1-luna" and providers[0].reasoning is True
+    assert providers[1].reasoning is False
+
+    only = _settings(**FOUNDRY, **{"foundry-reasoning": "false"}).llm_providers
+    assert len(only) == 1 and only[0].reasoning is False
+
+
+def test_no_provider_configured_raises():
+    import pytest
+
+    from agentic_ai.config import NoLLMConfigured
+
+    with pytest.raises(NoLLMConfigured):
+        _ = _settings().llm_providers
+    with pytest.raises(NoLLMConfigured):            # Foundry needs all three secrets
+        _ = _settings(**{"foundry-endpoint": "https://x.openai.azure.com"}).llm_providers
+
+
+def test_request_args_follow_the_provider_shape():
+    from agentic_ai.config import LLMProvider
+    from agentic_ai.llm.client import REASONING_MIN_TOKENS, _request_args
+
+    reasoning = LLMProvider("f", "k", "u", "m", reasoning=True)
+    assert _request_args(reasoning, 2000, 0.3) == {"max_completion_tokens": REASONING_MIN_TOKENS}
+    assert _request_args(reasoning, 8000, 0.3) == {"max_completion_tokens": 8000}
+    plain = LLMProvider("g", "k", "u", "m")
+    assert _request_args(plain, 2000, 0.3) == {"max_tokens": 2000, "temperature": 0.3}

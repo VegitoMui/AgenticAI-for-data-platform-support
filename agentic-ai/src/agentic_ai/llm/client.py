@@ -13,6 +13,17 @@ from agentic_ai.config import LLMProvider, Settings
 
 log = logging.getLogger(__name__)
 
+# Reasoning models spend part of the completion budget thinking before they
+# answer; too small a budget comes back as an empty reply.
+REASONING_MIN_TOKENS = 4000
+
+
+def _request_args(provider: LLMProvider, max_tokens: int, temperature: float) -> dict:
+    """Token limit and sampling arguments in the form this provider accepts."""
+    if provider.reasoning:
+        return {"max_completion_tokens": max(max_tokens, REASONING_MIN_TOKENS)}
+    return {"max_tokens": max_tokens, "temperature": temperature}
+
 
 @dataclass
 class LLMResult:
@@ -68,8 +79,7 @@ class LLMClient:
                         {"role": "system", "content": system_message},
                         {"role": "user", "content": user_message},
                     ],
-                    max_tokens=max_tokens,
-                    temperature=temperature,
+                    **_request_args(provider, max_tokens, temperature),
                 )
             except Exception as exc:
                 last_error = str(exc)
@@ -136,8 +146,7 @@ class LLMClient:
                 client.chat.completions.create(
                     model=provider.model,
                     messages=[{"role": "user", "content": "Respond with only the word OK."}],
-                    max_tokens=10,
-                    temperature=0,
+                    **_request_args(provider, 10, 0),
                 )
                 out.append({"name": provider.name, "status": "pass",
                             "latency_sec": round(time.time() - start, 2)})
@@ -152,5 +161,7 @@ def _code(error: str) -> str:
     if "401" in error:
         return "AUTH_FAILED"
     if "404" in error:
-        return "MODEL_NOT_FOUND"
+        return "MODEL_NOT_FOUND"  # on Foundry: wrong deployment name or endpoint
+    if "400" in error:
+        return "BAD_REQUEST"
     return "ERROR"

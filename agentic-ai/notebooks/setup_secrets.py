@@ -114,3 +114,10 @@ if not PRINCIPAL.startswith("REPLACE"):
     print(f"granted READ on {SCOPE} to {PRINCIPAL}")
 else:
     print("set PRINCIPAL above before running this cell")
+
+# COMMAND ----------
+
+
+
+# COMMAND ----------
+

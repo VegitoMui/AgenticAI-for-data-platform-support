@@ -12,10 +12,11 @@ import argparse
 import os
 from dataclasses import dataclass, field
 from functools import cached_property
+from urllib.parse import urlparse
 
 from agentic_ai.secrets import SecretResolver
 
-# Default models. Each can be overridden without a code change by setting the
+# Fallback models. Each can be overridden without a code change by setting the
 # optional secret named alongside it, e.g. when a provider retires a model.
 # Groq retired llama-3.3-70b-versatile on 2026-08-16.
 DEFAULT_MODELS = {
@@ -31,6 +32,27 @@ class LLMProvider:
     api_key: str
     base_url: str
     model: str
+    # Reasoning models (recent OpenAI models on Azure AI Foundry) take
+    # max_completion_tokens instead of max_tokens and reject a custom temperature.
+    reasoning: bool = False
+
+
+class NoLLMConfigured(RuntimeError):
+    pass
+
+
+def foundry_base_url(endpoint: str) -> str:
+    """The OpenAI-compatible v1 base URL for an Azure AI Foundry resource.
+
+    Accepts whatever the Foundry portal shows: the resource endpoint
+    (https://x.openai.azure.com or https://x.services.ai.azure.com), the
+    .../openai/v1 URL, or a full deployment "target URI" with a path and
+    api-version. Only the scheme and host are kept.
+    """
+    parsed = urlparse(endpoint.strip())
+    if not parsed.scheme or not parsed.netloc:
+        raise ValueError(f"not a valid Foundry endpoint URL: {endpoint!r}")
+    return f"{parsed.scheme}://{parsed.netloc}/openai/v1/"
 
 
 @dataclass
@@ -79,29 +101,43 @@ class Settings:
     @cached_property
     def llm_providers(self) -> list[LLMProvider]:
         """Tried in order; the client fails over to the next on any error or
-        empty reply. Groq first (fast, reliable), free OpenRouter last."""
+        empty reply.
+
+        Azure AI Foundry is primary when its three secrets exist
+        (foundry-endpoint, foundry-api-key, foundry-deployment). Groq and
+        OpenRouter follow as fallbacks, each only if its key is still in the
+        scope, so removing a key removes that provider.
+        """
         scope = self.secret_scope
-        get = self._resolver.get
-        return [
-            LLMProvider(
-                name="Groq Primary",
-                api_key=get(scope, "groq-api-key-1"),
-                base_url="https://api.groq.com/openai/v1",
-                model=self._model("model-groq-1"),
-            ),
-            LLMProvider(
-                name="Groq Fallback",
-                api_key=get(scope, "groq-api-key-2"),
-                base_url="https://api.groq.com/openai/v1",
-                model=self._model("model-groq-2"),
-            ),
-            LLMProvider(
-                name="OpenRouter Fallback",
-                api_key=get(scope, "openrouter-api-key"),
-                base_url="https://openrouter.ai/api/v1",
-                model=self._model("model-openrouter"),
-            ),
-        ]
+
+        def opt(key: str) -> str:
+            return self._resolver.get(scope, key, required=False)
+
+        providers: list[LLMProvider] = []
+        endpoint, key, deployment = opt("foundry-endpoint"), opt("foundry-api-key"), opt("foundry-deployment")
+        if endpoint and key and deployment:
+            providers.append(LLMProvider(
+                name="Azure AI Foundry",
+                api_key=key,
+                base_url=foundry_base_url(endpoint),
+                model=deployment,
+                reasoning=opt("foundry-reasoning").lower() not in ("false", "0", "no"),
+            ))
+        for name, key_name, base_url, model_key in (
+            ("Groq Primary", "groq-api-key-1", "https://api.groq.com/openai/v1", "model-groq-1"),
+            ("Groq Fallback", "groq-api-key-2", "https://api.groq.com/openai/v1", "model-groq-2"),
+            ("OpenRouter Fallback", "openrouter-api-key", "https://openrouter.ai/api/v1", "model-openrouter"),
+        ):
+            api_key = opt(key_name)
+            if api_key:
+                providers.append(LLMProvider(name, api_key, base_url, self._model(model_key)))
+
+        if not providers:
+            raise NoLLMConfigured(
+                f"No LLM provider configured in secret scope '{scope}'. Set foundry-endpoint, "
+                "foundry-api-key and foundry-deployment (or a Groq / OpenRouter key)."
+            )
+        return providers
 
     @cached_property
     def smtp(self) -> dict[str, str]:
