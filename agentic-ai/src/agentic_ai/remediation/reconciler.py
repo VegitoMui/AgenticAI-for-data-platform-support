@@ -218,7 +218,10 @@ def _diagnose(settings: Settings, spark, llm: LLMClient, workspace_client, incid
     except Exception:
         log.exception("agent diagnosis failed for %s -- falling back to single-call diagnosis",
                       incident["incident_id"])
-    return diagnose(llm, incident["raw_error"], incident["pipeline_name"]), None
+    d = diagnose(llm, incident["raw_error"], incident["pipeline_name"])
+    # The fallback never saw any evidence, so nothing it proposes may run without a person.
+    d.requires_human = True
+    return d, None
 
 
 def _check_repeat(settings: Settings, spark, gh: GitHubClient, workspace_client, incident: dict):
