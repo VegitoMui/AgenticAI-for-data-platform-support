@@ -306,6 +306,16 @@ class StorageAgent(BaseAgent):
              "merge", "cast", "overflow", "invalid value"),
             ("table_exists", "table_detail", "data_profile", "delta_history"),
         ),
+        SubAgent(
+            "DUPLICATE_TABLES",
+            "Is this table a leftover copy of another one? Compare the two tables in the evidence: "
+            "size, last writes, who writes them, properties. Say which one looks like the live table "
+            "and what the copy costs. Removing or archiving a table is its owner's decision: never "
+            "propose DROP, TRUNCATE or DELETE; give advice for the owner instead (for example, confirm "
+            "nothing reads the copy, then archive or drop it), and set requires_human to true.",
+            ("duplicate table", "leftover copy", "copy of"),
+            ("table_exists", "table_detail", "delta_history", "table_properties"),
+        ),
     ]
 
     tools = {

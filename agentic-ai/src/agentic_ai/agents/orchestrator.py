@@ -30,6 +30,7 @@ from agentic_ai.agents.storage import StorageAgent
 from agentic_ai.agents.trace import Trace
 from agentic_ai.config import Settings
 from agentic_ai.llm.client import LLMClient
+from agentic_ai.maintenance.scanner import APPROVAL_ONLY_RULES
 from agentic_ai.memory import store
 from agentic_ai.remediation.diagnosis import Diagnosis
 from agentic_ai.telemetry.run_context import TABLE_SCAN_SOURCE, RunContext, build_run_context
@@ -105,6 +106,9 @@ def diagnose_incident(settings: Settings, spark, llm: LLMClient, workspace_clien
 
     d = agent.run(llm, ToolContext(settings, ctx, spark=spark, workspace_client=workspace_client),
                   trace, memory_lines)
+    rule = str(incident.get("task_key") or "").partition(":")[0]
+    if incident.get("detection_source") == TABLE_SCAN_SOURCE and rule in APPROVAL_ONLY_RULES:
+        d.requires_human = True       # e.g. a duplicate table: only its owner decides
     trace.flush(settings, spark)
 
     return AgentOutcome(

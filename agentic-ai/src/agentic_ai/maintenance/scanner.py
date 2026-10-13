@@ -22,6 +22,11 @@ Rules (thresholds shared with the Storage agent, so the two always agree):
                   to VACUUM_MIN_REMOVED_FILES files or LAYOUT_IRRELEVANT_BYTES bytes.
                   Only removals older than 168 hours count: the system never vacuums
                   with a shorter retention, so newer ones could not be deleted anyway.
+  DUPLICATE_TABLE a table whose name is another table's name plus a copy marker
+                  (_copy, _bkp, _backup, _old, _tmp, _clone, _v2, a date, copy_of_ ...),
+                  in the same schema, with identical columns and a row count within
+                  DUPLICATE_ROW_TOLERANCE of it. Always goes to approval: whether a copy
+                  can go is its owner's decision (APPROVAL_ONLY_RULES).
 
 Read-only. Nothing here changes a table.
 """
@@ -29,6 +34,7 @@ Read-only. Nothing here changes a table.
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -48,6 +54,16 @@ log = logging.getLogger(__name__)
 
 SMALL_FILES = "SMALL_FILES"
 VACUUM_OVERDUE = "VACUUM_OVERDUE"
+DUPLICATE_TABLE = "DUPLICATE_TABLE"
+# Findings the system may only recommend: a person always decides.
+APPROVAL_ONLY_RULES = frozenset({DUPLICATE_TABLE})
+DUPLICATE_ROW_TOLERANCE = 0.10
+LINEAGE_LOOKBACK_DAYS = 90
+_COPY_MARKER = re.compile(
+    r"^(?:copy_of_|copy_|backup_|bkp_|old_|tmp_|temp_)"
+    r"|(?:_copy\d*|_bkp|_backup|_bak|_old|_tmp|_temp|_clone|_test|_v\d+|_\d{8}|_\d{4}_\d{2}_\d{2})$",
+    re.I,
+)
 VACUUM_MIN_REMOVED_FILES = 100
 HISTORY_SCAN_LIMIT = 200
 MB = 1024 * 1024
@@ -131,6 +147,96 @@ def vacuum_overdue(table: str, detail: dict, history: list[dict] | None = None,
 
 
 RULES = (small_files, vacuum_overdue)
+
+
+# ------------------------------------------------------------------ duplicate tables
+
+def base_name(leaf: str) -> str:
+    """'orders_bkp_20261013' -> 'orders'. Unchanged if the name has no copy marker."""
+    name = leaf
+    for _ in range(3):
+        stripped = _COPY_MARKER.sub("", name)
+        if stripped == name or not stripped:
+            break
+        name = stripped
+    return name
+
+
+def duplicate_candidates(tables: list[str]) -> list[tuple[str, str]]:
+    """(original, copy) pairs: same schema, copy's name is the original's plus a marker."""
+    present = {t.lower(): t for t in tables}
+    pairs = []
+    for t in tables:
+        catalog, schema, leaf = t.split(".")
+        original = present.get(f"{catalog}.{schema}.{base_name(leaf)}".lower())
+        if original and original.lower() != t.lower():
+            pairs.append((original, t))
+    return pairs
+
+
+def _columns(spark, table: str) -> list[tuple[str, str]]:
+    cols = []
+    for r in _rows(spark, f"DESCRIBE TABLE {quote(table)}"):
+        name = str(r.get("col_name") or "")
+        if not name or name.startswith("#"):
+            break
+        cols.append((name.lower(), str(r.get("data_type") or "").lower()))
+    return cols
+
+
+def _age(ts, now: datetime) -> str:
+    t = _utc(ts)
+    if t is None:
+        return "at an unknown time"
+    hours = (now - t).total_seconds() / 3600
+    return f"{hours:.0f} h ago" if hours < 48 else f"{hours / 24:.0f} days ago"
+
+
+def _last_lineage(spark, table: str) -> str:
+    """When any job, notebook or query last read or wrote the table. Best-effort: lineage
+    lags and may not be readable, which is reported rather than guessed."""
+    try:
+        rows = _rows(spark, f"""
+            SELECT max(event_time) AS last_seen FROM system.access.table_lineage
+            WHERE (source_table_full_name = '{table}' OR target_table_full_name = '{table}')
+              AND event_time >= current_timestamp() - INTERVAL {LINEAGE_LOOKBACK_DAYS} DAYS
+        """)
+    except Exception:
+        return "lineage was not readable, so recent use is unknown"
+    last = rows[0].get("last_seen") if rows else None
+    if last is None:
+        return f"no job, notebook or query read or wrote it in the last {LINEAGE_LOOKBACK_DAYS} days"
+    return f"last read or written {_age(last, datetime.now(timezone.utc))} according to lineage"
+
+
+def compare_duplicate(spark, original: str, copy: str, now: datetime | None = None) -> Finding | None:
+    now = now or datetime.now(timezone.utc)
+    try:
+        cols_o, cols_c = _columns(spark, original), _columns(spark, copy)
+        if not cols_o or cols_o != cols_c:
+            return None
+        rows_o = _int(_rows(spark, f"SELECT count(*) AS n FROM {quote(original)}")[0].get("n"))
+        rows_c = _int(_rows(spark, f"SELECT count(*) AS n FROM {quote(copy)}")[0].get("n"))
+        if not rows_o or abs(rows_o - rows_c) / rows_o > DUPLICATE_ROW_TOLERANCE:
+            return None
+        det_o = _rows(spark, f"DESCRIBE DETAIL {quote(original)}")[0]
+        det_c = _rows(spark, f"DESCRIBE DETAIL {quote(copy)}")[0]
+    except Exception as exc:
+        log.info("cannot compare %s with %s: %s", copy, original, str(exc).splitlines()[0][:120])
+        return None
+    return Finding(
+        DUPLICATE_TABLE, copy,
+        f"DUPLICATE TABLE: {copy} looks like a leftover copy of `{original}`: identical "
+        f"{len(cols_c)} columns, {rows_c:,} rows against {rows_o:,}, last written "
+        f"{_age(det_c.get('lastModified'), now)} against {_age(det_o.get('lastModified'), now)}, "
+        f"{_int(det_c.get('sizeInBytes')) / MB:,.0f} MB on storage. "
+        f"For the copy, {_last_lineage(spark, copy)}. "
+        "Whether it can be archived or removed is its owner's decision; nothing is changed automatically.",
+    )
+
+
+def duplicate_tables(spark, tables: list[str]) -> list[Finding]:
+    return [f for o, c in duplicate_candidates(tables) if (f := compare_duplicate(spark, o, c))]
 
 
 # ------------------------------------------------------------------ scanning
@@ -231,16 +337,17 @@ def run_once(settings: Settings, spark=None) -> dict:
 
     skip = suppressed_keys(settings, spark)
     findings, raised, suppressed = 0, 0, 0
-    for table in tables:
-        for f in scan_table(spark, table):
-            findings += 1
-            if f.key in skip:
-                suppressed += 1
-                continue
-            incident_id = _write_incident(settings, spark, f)
-            skip.add(f.key)
-            raised += 1
-            log.info("raised %s: %s", incident_id, f.summary[:160])
+    all_findings = [f for table in tables for f in scan_table(spark, table)]
+    all_findings += duplicate_tables(spark, tables)
+    for f in all_findings:
+        findings += 1
+        if f.key in skip:
+            suppressed += 1
+            continue
+        incident_id = _write_incident(settings, spark, f)
+        skip.add(f.key)
+        raised += 1
+        log.info("raised %s: %s", incident_id, f.summary[:160])
 
     summary = {"tables": len(tables), "findings": findings, "raised": raised, "suppressed": suppressed}
     log.info("table scan complete: %s", summary)

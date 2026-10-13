@@ -301,6 +301,9 @@ def maintenance_context(incident: dict) -> RunContext:
     ))
     if table:
         ctx.tables_written = [table]
+        # e.g. the original a duplicate was copied from, quoted in the finding
+        ctx.tables_from_code = [t for t in extract_tables_from_code(incident.get("raw_error") or "")
+                                if t != table]
     ctx.notes.append("raised by the table scanner; no job run is involved")
     return ctx
 
