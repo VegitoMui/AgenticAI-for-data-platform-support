@@ -35,6 +35,8 @@ class FakeSpark:
         self.queries.append(" ".join(q.split()))
         if q.startswith("SHOW TABLES"):
             rows = [{"tableName": t, "isTemporary": False} for t in self.tables]
+        elif q.startswith("DESCRIBE HISTORY"):
+            rows = []
         elif q.startswith("DESCRIBE DETAIL"):
             name = q.split("`.`")[-1].strip("` ")
             if name not in self.details:
@@ -126,7 +128,8 @@ def test_scan_incident_goes_straight_to_storage(monkeypatch):
     (f"OPTIMIZE {TABLE}", False),
     (f"OPTIMIZE {TABLE} ZORDER BY (order_date)", False),
     (f"ANALYZE TABLE {TABLE} COMPUTE STATISTICS", False),
-    (f"VACUUM {TABLE}", False),                                  # default retention is 7 days
+    (f"VACUUM {TABLE}", True),                     # retention comes from the table: unknown
+    (f"VACUUM {TABLE} DRY RUN", False),                          # deletes nothing
     (f"VACUUM {TABLE} RETAIN 168 HOURS", False),
     (f"VACUUM {TABLE} RETAIN 24 HOURS", True),
     (f"VACUUM {TABLE} RETAIN 0 HOURS", True),
@@ -150,3 +153,55 @@ def test_destructive_action_overrides_a_confident_llm():
 
     result.parsed["actions"] = [f"OPTIMIZE {TABLE}"]
     assert diagnosis_from_result(result, "storage").requires_human is False
+
+
+# ------------------------------------------------------------------ VACUUM_OVERDUE
+
+def _history(*commits):
+    """commits: (version, operation, hours_ago, metrics)"""
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime(2026, 10, 20, 12, 0, tzinfo=timezone.utc)
+    rows = [{"version": v, "operation": op, "timestamp": now - timedelta(hours=h), "operationMetrics": m}
+            for v, op, h, m in commits]
+    return rows, now
+
+
+def test_vacuum_overdue_counts_only_removals_older_than_168_hours():
+    from agentic_ai.maintenance.scanner import VACUUM_OVERDUE, vacuum_overdue
+
+    rows, now = _history(
+        (2, "OPTIMIZE", 170, {"numRemovedFiles": "1000", "numRemovedBytes": str(500 * MB)}),
+        (1, "WRITE", 171, {"numFiles": "1000"}),
+    )
+    hit = vacuum_overdue(TABLE, {}, rows, now)
+    assert hit and hit.rule == VACUUM_OVERDUE and hit.key == f"VACUUM_OVERDUE:{TABLE}"
+    assert "1,000 files (500 MB)" in hit.summary and "RETAIN 168 HOURS" in hit.summary
+
+    recent, now = _history((2, "OPTIMIZE", 24, {"numRemovedFiles": "1000", "numRemovedBytes": str(500 * MB)}))
+    assert vacuum_overdue(TABLE, {}, recent, now) is None          # only 1 day old: VACUUM would keep them
+
+
+def test_vacuum_overdue_stops_at_the_last_vacuum_and_reads_merge_metrics():
+    from agentic_ai.maintenance.scanner import vacuum_overdue
+
+    cleaned, now = _history(
+        (3, "VACUUM END", 2, {}),
+        (2, "OPTIMIZE", 300, {"numRemovedFiles": "1000", "numRemovedBytes": str(500 * MB)}),
+    )
+    assert vacuum_overdue(TABLE, {}, cleaned, now) is None
+
+    merged, now = _history((5, "MERGE", 200, {"numTargetFilesRemoved": "40",
+                                              "numTargetBytesRemoved": str(300 * MB)}))
+    assert vacuum_overdue(TABLE, {}, merged, now) is not None      # few files but many bytes
+
+    small, now = _history((5, "DELETE", 200, {"numRemovedFiles": "10", "numRemovedBytes": str(5 * MB)}))
+    assert vacuum_overdue(TABLE, {}, small, now) is None           # not worth a VACUUM
+
+
+def test_scanner_vacuum_finding_and_guard_agree():
+    from agentic_ai.maintenance.scanner import vacuum_overdue
+
+    rows, now = _history((2, "OPTIMIZE", 170, {"numRemovedFiles": "1000", "numRemovedBytes": str(500 * MB)}))
+    proposed = vacuum_overdue(TABLE, {}, rows, now).summary.split("`")[1]
+    assert proposed == f"VACUUM {TABLE} RETAIN 168 HOURS" and needs_person(proposed) is False

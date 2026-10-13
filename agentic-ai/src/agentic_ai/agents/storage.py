@@ -292,7 +292,9 @@ class StorageAgent(BaseAgent):
             "COMPUTE STATISTICS are non-destructive maintenance the system may run unattended: when "
             "the evidence shows a small-file problem, propose `OPTIMIZE <that exact table>` and set "
             "requires_human to false. Add ZORDER BY only for a column the evidence shows queries "
-            "filter on. Never propose VACUUM with a retention under 168 hours.",
+            "filter on. When files removed by OPTIMIZE, DELETE, MERGE or overwrite are still on "
+            "storage, propose `VACUUM <that exact table> RETAIN 168 HOURS`, always with the RETAIN "
+            "clause written out and never under 168 hours; requires_human may then be false.",
             ("small files", "too many files", "optimize", "vacuum", "zorder", "file size",
              "slow", "listing"),
             ("table_detail", "delta_history", "table_properties"),

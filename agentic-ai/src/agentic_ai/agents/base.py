@@ -45,17 +45,25 @@ _NEEDS_PERSON = re.compile(
     r"|\bDROP\s+(COLUMN|COLUMNS|PARTITION|CONSTRAINT)\b",
     re.I,
 )
-_VACUUM_RETAIN = re.compile(r"^\s*VACUUM\b.*?\bRETAIN\s+(\d+(?:\.\d+)?)\s+HOURS?\b", re.I | re.S)
+_VACUUM = re.compile(r"^\s*VACUUM\b", re.I)
+_VACUUM_RETAIN = re.compile(r"\bRETAIN\s+(\d+(?:\.\d+)?)\s+HOURS?\b", re.I)
+_DRY_RUN = re.compile(r"\bDRY\s+RUN\b", re.I)
 MIN_VACUUM_RETAIN_HOURS = 168
 
 
 def needs_person(action: str) -> bool:
     """True for actions that must never run without approval: access changes, anything that
-    drops, deletes or restores data, and VACUUM retaining less than 168 hours."""
+    drops, deletes or restores data, and any VACUUM that does not state RETAIN of at least
+    168 hours. A VACUUM without RETAIN uses the table's own retention setting, which can be
+    set lower than 168 hours, so only an explicit, long enough retention may run unattended."""
     if _NEEDS_PERSON.search(action):
         return True
-    m = _VACUUM_RETAIN.match(action)
-    return bool(m and float(m.group(1)) < MIN_VACUUM_RETAIN_HOURS)
+    if _VACUUM.match(action):
+        if _DRY_RUN.search(action):
+            return False                      # lists files, deletes nothing
+        m = _VACUUM_RETAIN.search(action)
+        return not m or float(m.group(1)) < MIN_VACUUM_RETAIN_HOURS
+    return False
 
 
 # ------------------------------------------------------------------ types

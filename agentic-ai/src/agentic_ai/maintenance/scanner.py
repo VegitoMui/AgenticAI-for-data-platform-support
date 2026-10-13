@@ -15,8 +15,13 @@ One pass, for every Delta table in the configured schemas (settings.scan_schemas
 The reconciler then diagnoses it with the Storage agent like any incident.
 
 Rules (thresholds shared with the Storage agent, so the two always agree):
-  SMALL_FILES   at least SMALL_FILE_MIN_FILES files, average file below
-                SMALL_FILE_BYTES, table at least LAYOUT_IRRELEVANT_BYTES.
+  SMALL_FILES     at least SMALL_FILE_MIN_FILES files, average file below
+                  SMALL_FILE_BYTES, table at least LAYOUT_IRRELEVANT_BYTES.
+  VACUUM_OVERDUE  files removed from the table (by OPTIMIZE, DELETE, MERGE, UPDATE,
+                  overwrite) MORE than 168 hours ago, since the last VACUUM, add up
+                  to VACUUM_MIN_REMOVED_FILES files or LAYOUT_IRRELEVANT_BYTES bytes.
+                  Only removals older than 168 hours count: the system never vacuums
+                  with a shorter retention, so newer ones could not be deleted anyway.
 
 Read-only. Nothing here changes a table.
 """
@@ -26,8 +31,9 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
+from agentic_ai.agents.base import MIN_VACUUM_RETAIN_HOURS
 from agentic_ai.agents.storage import (
     LAYOUT_IRRELEVANT_BYTES,
     SMALL_FILE_BYTES,
@@ -41,7 +47,13 @@ from agentic_ai.telemetry.run_context import TABLE_SCAN_SOURCE
 log = logging.getLogger(__name__)
 
 SMALL_FILES = "SMALL_FILES"
+VACUUM_OVERDUE = "VACUUM_OVERDUE"
+VACUUM_MIN_REMOVED_FILES = 100
+HISTORY_SCAN_LIMIT = 200
 MB = 1024 * 1024
+# operationMetrics keys for files and bytes a commit removed, across operations.
+_REMOVED_FILES = ("numRemovedFiles", "numTargetFilesRemoved")
+_REMOVED_BYTES = ("numRemovedBytes", "numTargetBytesRemoved")
 
 
 @dataclass
@@ -58,7 +70,7 @@ class Finding:
 
 # ------------------------------------------------------------------ rules
 
-def small_files(table: str, detail: dict) -> Finding | None:
+def small_files(table: str, detail: dict, history: list[dict] | None = None) -> Finding | None:
     files = int(detail.get("numFiles") or 0)
     size = int(detail.get("sizeInBytes") or 0)
     if files < SMALL_FILE_MIN_FILES or size < LAYOUT_IRRELEVANT_BYTES:
@@ -74,7 +86,51 @@ def small_files(table: str, detail: dict) -> Finding | None:
     )
 
 
-RULES = (small_files,)
+def _int(v) -> int:
+    try:
+        return int(v or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _utc(ts) -> datetime | None:
+    if ts is None:
+        return None
+    if isinstance(ts, str):
+        try:
+            ts = datetime.fromisoformat(ts)
+        except ValueError:
+            return None
+    return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+
+
+def vacuum_overdue(table: str, detail: dict, history: list[dict] | None = None,
+                   now: datetime | None = None) -> Finding | None:
+    """Files removed more than 168 hours ago, not yet vacuumed, worth deleting."""
+    cutoff = (now or datetime.now(timezone.utc)) - timedelta(hours=MIN_VACUUM_RETAIN_HOURS)
+    files = size = 0
+    for h in sorted(history or [], key=lambda h: _int(h.get("version")), reverse=True):
+        op = str(h.get("operation") or "").upper()
+        if op.startswith("VACUUM END"):
+            break                              # older removals were already eligible then
+        ts = _utc(h.get("timestamp"))
+        if ts is None or ts > cutoff:
+            continue                           # too recent: a 168-hour VACUUM keeps these
+        metrics = h.get("operationMetrics") or {}
+        files += sum(_int(metrics.get(k)) for k in _REMOVED_FILES)
+        size += sum(_int(metrics.get(k)) for k in _REMOVED_BYTES)
+    if files < VACUUM_MIN_REMOVED_FILES and size < LAYOUT_IRRELEVANT_BYTES:
+        return None
+    return Finding(
+        VACUUM_OVERDUE, table,
+        f"VACUUM OVERDUE on {table}: {files:,} files ({size / MB:,.0f} MB) were removed from the "
+        f"table more than {MIN_VACUUM_RETAIN_HOURS} hours ago and are still on storage, because the "
+        f"table has not been vacuumed since. `VACUUM {table} RETAIN {MIN_VACUUM_RETAIN_HOURS} HOURS` "
+        "deletes them and keeps everything newer, so time travel within the last 7 days still works.",
+    )
+
+
+RULES = (small_files, vacuum_overdue)
 
 
 # ------------------------------------------------------------------ scanning
@@ -103,7 +159,12 @@ def scan_table(spark, table: str) -> list[Finding]:
         return []
     if str(detail.get("format") or "").lower() != "delta":
         return []
-    return [f for rule in RULES if (f := rule(table, detail))]
+    try:
+        history = _rows(spark, f"DESCRIBE HISTORY {quote(table)} LIMIT {HISTORY_SCAN_LIMIT}")
+    except Exception as exc:
+        log.info("no history for %s: %s", table, str(exc).splitlines()[0][:120])
+        history = []
+    return [f for rule in RULES if (f := rule(table, detail, history))]
 
 
 def suppressed_keys(settings: Settings, spark) -> set[str]:
