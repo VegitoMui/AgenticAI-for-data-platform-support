@@ -60,6 +60,37 @@ resources:
         on_failure:
           - ${var.approver_email}
 
+    # Phase 4b: checks the tables in scan_schemas for maintenance problems that never
+    # make a job fail (small files, ...) and raises incidents for the reconciler.
+    # Paused to avoid cost: run manually from Workflows > Jobs > Run now.
+    scanner:
+      name: "[${bundle.target}] agentic-ai table scanner"
+      schedule:
+        quartz_cron_expression: "0 0 */6 * * ?"
+        timezone_id: Asia/Kolkata
+        pause_status: PAUSED
+      max_concurrent_runs: 1
+      tasks:
+        - task_key: scan_tables
+          python_wheel_task:
+            package_name: agentic_ai
+            entry_point: scanner
+            parameters:
+              - --catalog=${var.catalog}
+              - --schema=${var.schema}
+              - --secret-scope=${var.secret_scope}
+              - --scan-schemas=${var.scan_schemas}
+          environment_key: default
+      environments:
+        - environment_key: default
+          spec:
+            client: "3"
+            dependencies:
+              - ../dist/*.whl
+      email_notifications:
+        on_failure:
+          - ${var.approver_email}
+
     # One-shot: creates or migrates all Delta tables. Run manually after deploy.
     migrate:
       name: "[${bundle.target}] agentic-ai migrate"

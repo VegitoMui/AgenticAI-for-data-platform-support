@@ -70,6 +70,11 @@ class Settings:
     failed_states: tuple[str, ...] = ("FAILED", "CANCELED", "CANCELLED", "ERROR", "TIMED_OUT")
     detection_source: str = "auto"  # system_tables | jobs_api | auto
 
+    # Table scanner (maintenance/scanner.py): which schemas to scan, as catalog.schema
+    scan_schemas: tuple[str, ...] = ()
+    scan_table_limit: int = 200
+    scan_cooldown_hours: int = 24
+
     # Approval
     approval_expiry_hours: int = 72
     auto_approve_enabled: bool = False
@@ -177,10 +182,13 @@ def settings_from_args(argv: list[str] | None = None) -> Settings:
         default=os.getenv("AGENTIC_DETECTION_SOURCE", "auto"),
         choices=["system_tables", "jobs_api", "auto"],
     )
+    parser.add_argument("--scan-schemas", default=os.getenv("AGENTIC_SCAN_SCHEMAS", ""),
+                        help="comma-separated catalog.schema list for the table scanner")
     known, _ = parser.parse_known_args(argv)
     return Settings(
         catalog=known.catalog,
         schema=known.schema,
         secret_scope=known.secret_scope,
         detection_source=known.detection_source,
+        scan_schemas=tuple(s.strip() for s in known.scan_schemas.split(",") if s.strip()),
     )

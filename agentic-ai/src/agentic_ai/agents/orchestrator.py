@@ -32,7 +32,7 @@ from agentic_ai.config import Settings
 from agentic_ai.llm.client import LLMClient
 from agentic_ai.memory import store
 from agentic_ai.remediation.diagnosis import Diagnosis
-from agentic_ai.telemetry.run_context import RunContext, build_run_context
+from agentic_ai.telemetry.run_context import TABLE_SCAN_SOURCE, RunContext, build_run_context
 
 log = logging.getLogger(__name__)
 
@@ -88,7 +88,13 @@ def diagnose_incident(settings: Settings, spark, llm: LLMClient, workspace_clien
 
     if ctx is None:
         ctx = build_run_context(settings, incident, workspace_client=workspace_client, spark=spark)
-    r = route(ctx, llm, trace)
+    if incident.get("detection_source") == TABLE_SCAN_SOURCE:
+        # A table-scanner finding is a table problem by construction: no routing call.
+        r = Route("storage", 1.0, "scan", "raised by the table scanner", {})
+        trace.add("classify", "storage via scan (confidence 1.00): raised by the table scanner",
+                  sub_agent="storage")
+    else:
+        r = route(ctx, llm, trace)
     agent = AGENTS.get(r.agent) or AGENTS[DEFAULT_AGENT]
 
     memory_lines, matches, embedding = store.recall(

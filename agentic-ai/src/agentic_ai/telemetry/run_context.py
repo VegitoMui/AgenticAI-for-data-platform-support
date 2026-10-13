@@ -47,6 +47,8 @@ _SQL_TABLE = re.compile(
 _BACKTICK_PARTS = re.compile(r"`([A-Za-z_]\w*)`\.`([A-Za-z_]\w*)`\.`([A-Za-z_]\w*)`")
 # Dotted names that look like tables but are Python modules or Spark configs.
 _NOT_TABLE_PREFIXES = ("spark.", "pyspark.", "databricks.", "system.", "java.", "org.", "com.", "py4j.")
+# Incidents raised by the table scanner (maintenance/scanner.py) have no job run.
+TABLE_SCAN_SOURCE = "table_scan"
 FAILED_TASK_STATES = {"FAILED", "TIMEDOUT", "TIMED_OUT", "CANCELED", "CANCELLED", "ERROR", "INTERNAL_ERROR"}
 
 
@@ -288,8 +290,25 @@ def fetch_lineage(spark, job_id: str, run_id: str, ctx: RunContext) -> None:
     ctx.lineage_scope = scope
 
 
+def maintenance_context(incident: dict) -> RunContext:
+    """Run context for a table-scanner finding: no job run, just the finding and its table.
+    The task_key is '<RULE>:<catalog.schema.table>'."""
+    rule, _, table = str(incident.get("task_key") or "").partition(":")
+    ctx = RunContext(job_id="", run_id="", job_name=incident.get("pipeline_name") or "")
+    ctx.task_errors.append(TaskError(
+        task_key=rule or "maintenance", task_run_id="", result_state="MAINTENANCE",
+        task_type="table scan", error=_clip_head(incident.get("raw_error") or "", MAX_ERROR_CHARS),
+    ))
+    if table:
+        ctx.tables_written = [table]
+    ctx.notes.append("raised by the table scanner; no job run is involved")
+    return ctx
+
+
 def build_run_context(settings: Settings, incident: dict, workspace_client=None, spark=None) -> RunContext:
     """Gather evidence for one incident row (needs job_id, run_id, pipeline_name)."""
+    if incident.get("detection_source") == TABLE_SCAN_SOURCE:
+        return maintenance_context(incident)
     job_id = str(incident.get("job_id") or "")
     run_id = str(incident.get("run_id") or "")
     ctx = RunContext(job_id=job_id, run_id=run_id, job_name=incident.get("pipeline_name") or "")

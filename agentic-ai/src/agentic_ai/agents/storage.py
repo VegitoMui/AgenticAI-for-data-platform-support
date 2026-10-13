@@ -288,7 +288,11 @@ class StorageAgent(BaseAgent):
         SubAgent(
             "OPTIMIZATION",
             "Is the file layout hurting reads or writes? Look at file counts and sizes, "
-            "OPTIMIZE / VACUUM recency and auto-optimize settings.",
+            "OPTIMIZE / VACUUM recency and auto-optimize settings. OPTIMIZE and ANALYZE TABLE ... "
+            "COMPUTE STATISTICS are non-destructive maintenance the system may run unattended: when "
+            "the evidence shows a small-file problem, propose `OPTIMIZE <that exact table>` and set "
+            "requires_human to false. Add ZORDER BY only for a column the evidence shows queries "
+            "filter on. Never propose VACUUM with a retention under 168 hours.",
             ("small files", "too many files", "optimize", "vacuum", "zorder", "file size",
              "slow", "listing"),
             ("table_detail", "delta_history", "table_properties"),

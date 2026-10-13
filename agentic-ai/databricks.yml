@@ -28,6 +28,9 @@ variables:
     default: yashovardhan.rawat@airodigitallabs.com
   warehouse_id:
     description: SQL warehouse the approvals App queries through. No default -- each target must set it.
+  scan_schemas:
+    description: Comma-separated catalog.schema list the table scanner checks for maintenance problems
+    default: databricks_ws.agentic_probe
 
 targets:
   dev:

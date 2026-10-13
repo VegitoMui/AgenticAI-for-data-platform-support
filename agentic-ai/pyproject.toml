@@ -22,6 +22,7 @@ dev = ["pytest>=8.0", "ruff>=0.5", "build>=1.2"]
 watcher = "agentic_ai.entrypoints:watcher_main"
 reconciler = "agentic_ai.entrypoints:reconciler_main"
 migrate = "agentic_ai.entrypoints:migrate_main"
+scanner = "agentic_ai.entrypoints:scanner_main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

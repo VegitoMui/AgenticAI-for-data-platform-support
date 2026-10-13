@@ -39,7 +39,17 @@ def reconciler_main() -> None:
     logging.getLogger("reconciler").info("reconciled: %s", stats)
 
 
-def migrate_main() -> None:
+def scanner_main() -> None:
+    _setup_logging()
+    from agentic_ai.config import settings_from_args
+    from agentic_ai.maintenance.scanner import run_once
+
+    settings = settings_from_args()
+    stats = run_once(settings)
+    logging.getLogger("scanner").info("scanned: %s", stats)
+
+
+def migrate_main() -> None:def migrate_main() -> None:
     _setup_logging()
     from agentic_ai.config import settings_from_args
     from agentic_ai.migrations import apply_all

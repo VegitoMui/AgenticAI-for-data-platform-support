@@ -39,7 +39,23 @@ log = logging.getLogger(__name__)
 
 MAX_EVIDENCE_CHARS = 1200      # per tool, in the prompt
 MAX_EVIDENCE_TOTAL = 8000      # all tools together, in the prompt
-_ACCESS_CHANGE = re.compile(r"^\s*(GRANT|REVOKE)\b", re.I)
+# Actions that always need a person, whatever the LLM says.
+_NEEDS_PERSON = re.compile(
+    r"^\s*(GRANT|REVOKE|DROP|TRUNCATE|DELETE|RESTORE)\b"
+    r"|\bDROP\s+(COLUMN|COLUMNS|PARTITION|CONSTRAINT)\b",
+    re.I,
+)
+_VACUUM_RETAIN = re.compile(r"^\s*VACUUM\b.*?\bRETAIN\s+(\d+(?:\.\d+)?)\s+HOURS?\b", re.I | re.S)
+MIN_VACUUM_RETAIN_HOURS = 168
+
+
+def needs_person(action: str) -> bool:
+    """True for actions that must never run without approval: access changes, anything that
+    drops, deletes or restores data, and VACUUM retaining less than 168 hours."""
+    if _NEEDS_PERSON.search(action):
+        return True
+    m = _VACUUM_RETAIN.match(action)
+    return bool(m and float(m.group(1)) < MIN_VACUUM_RETAIN_HOURS)
 
 
 # ------------------------------------------------------------------ types
@@ -124,8 +140,8 @@ def diagnosis_from_result(result, agent_name: str) -> Diagnosis:
         confidence = 0.0
 
     actions = [str(a) for a in (p.get("actions") or []) if str(a).strip()][:10]
-    # Permission changes are never applied without a person, whatever the LLM says.
-    changes_access = any(_ACCESS_CHANGE.match(a) for a in actions)
+    # Destructive or access-changing actions never run without a person, whatever the LLM says.
+    changes_access = any(needs_person(a) for a in actions)
 
     return Diagnosis(
         agent_name=agent_name,
