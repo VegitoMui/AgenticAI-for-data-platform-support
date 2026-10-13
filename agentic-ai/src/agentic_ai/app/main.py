@@ -217,6 +217,23 @@ def load_trace(incident_id: str) -> list[dict]:
         return []
 
 
+def load_occurrences(incident_ids: list[str]) -> dict[str, dict]:
+    """How often each pending failure has happened. Best-effort: empty if the
+    dedupe columns are not migrated yet or incidents is not readable."""
+    if not incident_ids:
+        return {}
+    marks = ", ".join("?" for _ in incident_ids)
+    try:
+        rows = run_query(
+            f"SELECT incident_id, occurrence_count, last_seen_at FROM {table('incidents')} "
+            f"WHERE incident_id IN ({marks})",
+            tuple(incident_ids),
+        )
+    except Exception:
+        return {}
+    return {r["incident_id"]: r for r in rows}
+
+
 DECISION_TEXT = {
     "approved": "Approved, waiting to run",
     "APPROVED_EXECUTED": "Approved and run",
@@ -239,6 +256,11 @@ def index(request: Request, id: str | None = None, done: str | None = None, ref:
         WHERE status = 'pending'
         ORDER BY severity DESC, requested_at ASC
     """)]
+    seen = load_occurrences([p["incident_id"] for p in pending])
+    for p in pending:
+        occ = seen.get(p["incident_id"], {})
+        p["occurrences"] = int(occ.get("occurrence_count") or 1)
+        p["last_seen_rel"] = relative(occ.get("last_seen_at"), future=False)
 
     recent = run_query(f"""
         SELECT request_id, pipeline_name, status, reviewed_by, reviewed_at

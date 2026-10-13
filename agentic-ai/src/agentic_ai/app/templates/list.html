@@ -92,6 +92,10 @@
   .item .m .p { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .item .m span:last-child { white-space: nowrap; }
   .item .m .soon { color: var(--warn); font-weight: 600; }
+  .repeat {
+    display: inline-block; margin-top: 6px; font-size: 12px; font-weight: 600;
+    color: var(--stop); background: var(--stop-soft); padding: 1px 8px; border-radius: 999px;
+  }
 
   .recent ul { list-style: none; margin: 0; padding: 0 4px; }
   .recent li { padding: 8px 0; border-top: 1px solid var(--rule); font-size: 13px; }
@@ -252,6 +256,7 @@
               {% if p.expiring_soon %}<span class="soon">expires {{ p.expires_rel }}</span>
               {% else %}<span>{{ p.requested_rel }}</span>{% endif %}
             </div>
+            {% if p.occurrences > 1 %}<span class="repeat">Failed {{ p.occurrences }} times</span>{% endif %}
           </a>
         </li>
         {% endfor %}
@@ -296,6 +301,7 @@
         <div><dt>Requested</dt><dd>{{ s.requested_rel }}</dd></div>
         <div><dt>Expires</dt><dd class="{{ 'soon' if s.expiring_soon }}">{{ s.expires_rel }}</dd></div>
         <div><dt>Incident</dt><dd>{{ s.incident_id }}</dd></div>
+        {% if s.occurrences > 1 %}<div><dt>Failed</dt><dd class="soon">{{ s.occurrences }} times{% if s.last_seen_rel %}, last {{ s.last_seen_rel }}{% endif %}</dd></div>{% endif %}
         <div><dt>Request</dt><dd>{{ s.request_id }}</dd></div>
         {% if s.github_issue_number %}<div><dt>Ticket</dt><dd>#{{ s.github_issue_number }}</dd></div>{% endif %}
       </dl>

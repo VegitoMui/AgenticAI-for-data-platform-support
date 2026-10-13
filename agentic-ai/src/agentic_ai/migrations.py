@@ -65,7 +65,8 @@ TABLES: list[tuple[str, str, list[str]]] = [
         created_at          TIMESTAMP,
         updated_at          TIMESTAMP
         """,
-        [],
+        # Repeat-failure collapsing (remediation/dedupe.py).
+        ["fingerprint STRING", "duplicate_of STRING", "occurrence_count INT", "last_seen_at TIMESTAMP"],
     ),
 
     # -------------------------------------------------------------- approvals

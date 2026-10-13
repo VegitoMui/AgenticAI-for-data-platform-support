@@ -79,13 +79,15 @@ class AgentOutcome:
 
 
 def diagnose_incident(settings: Settings, spark, llm: LLMClient, workspace_client,
-                      incident: dict) -> AgentOutcome:
+                      incident: dict, ctx: RunContext | None = None) -> AgentOutcome:
+    """`ctx` may be passed in when the caller already built the run context."""
     start = time.time()
     incident_id = incident["incident_id"]
     pipeline = incident.get("pipeline_name") or ""
     trace = Trace(incident_id, pipeline)
 
-    ctx = build_run_context(settings, incident, workspace_client=workspace_client, spark=spark)
+    if ctx is None:
+        ctx = build_run_context(settings, incident, workspace_client=workspace_client, spark=spark)
     r = route(ctx, llm, trace)
     agent = AGENTS.get(r.agent) or AGENTS[DEFAULT_AGENT]
 

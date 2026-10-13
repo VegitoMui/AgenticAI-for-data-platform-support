@@ -111,12 +111,14 @@ def test_migrations_add_only_missing_columns():
             self.queries.append(" ".join(q.split()))
 
         def table(self, name):
-            cols = ["incident_id", "embedding"] + (["embedding_model"] if self.has_column else [])
+            added = ["embedding_model", "fingerprint", "duplicate_of", "occurrence_count", "last_seen_at"]
+            cols = ["incident_id", "embedding"] + (added if self.has_column else [])
             return NS(columns=cols)
 
     fresh = MigSpark(has_column=False)
-    assert apply_all(Settings(), fresh)["alters_applied"] == 1
+    assert apply_all(Settings(), fresh)["alters_applied"] == 5      # 1 on memory + 4 on incidents
     assert any(q.endswith("incident_memory ADD COLUMNS (embedding_model STRING)") for q in fresh.queries)
+    assert any(q.endswith("incidents ADD COLUMNS (fingerprint STRING)") for q in fresh.queries)
     assert not any("IF NOT EXISTS (" in q for q in fresh.queries)
 
     done = MigSpark(has_column=True)

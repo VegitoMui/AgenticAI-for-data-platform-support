@@ -11,8 +11,12 @@ in order:
 
   2. Diagnose NEW incidents with the specialist agents (agents/orchestrator.py:
      run context, router, memory, agent tools, trace). If that path fails,
-     the Phase 2 single-call diagnose() is used instead. Based on
-     needs_approval(), each incident is either:
+     the Phase 2 single-call diagnose() is used instead.
+     A NEW incident that repeats one still waiting for a decision (same job,
+     same error) is not diagnosed: it is marked DUPLICATE, the open incident's
+     occurrence count goes up and its GitHub issue gets a comment, with no
+     LLM call and no email (remediation/dedupe.py).
+     Otherwise, based on needs_approval(), each incident is either:
        a) auto-executed immediately, remediation_log written, a GitHub issue
           opened and closed with the outcome, and a "fix applied" email sent, or
        b) blocked: an approval_requests row is written, a GitHub issue is
@@ -47,7 +51,9 @@ from agentic_ai.llm.client import LLMClient
 from agentic_ai.memory.store import update_outcome
 from agentic_ai.notify.mailer import EmailNotifier, decision_needed, fix_applied
 from agentic_ai.remediation import executor
+from agentic_ai.remediation.dedupe import find_open_parent, fingerprint, record_repeat
 from agentic_ai.remediation.diagnosis import diagnose, needs_approval
+from agentic_ai.telemetry.run_context import build_run_context
 from agentic_ai.vcs.github import GitHubClient
 
 log = logging.getLogger(__name__)
@@ -203,16 +209,54 @@ def _issue_body(incident: dict, d, analysis: list[str] | None = None) -> str:
     return body
 
 
-def _diagnose(settings: Settings, spark, llm: LLMClient, workspace_client, incident: dict):
+def _diagnose(settings: Settings, spark, llm: LLMClient, workspace_client, incident: dict, ctx=None):
     """Specialist agents first; the Phase 2 single LLM call if they fail.
     Returns (Diagnosis, AgentOutcome or None). Raises only if both fail."""
     try:
-        outcome = diagnose_incident(settings, spark, llm, workspace_client, incident)
+        outcome = diagnose_incident(settings, spark, llm, workspace_client, incident, ctx)
         return outcome.diagnosis, outcome
     except Exception:
         log.exception("agent diagnosis failed for %s -- falling back to single-call diagnosis",
                       incident["incident_id"])
     return diagnose(llm, incident["raw_error"], incident["pipeline_name"]), None
+
+
+def _check_repeat(settings: Settings, spark, gh: GitHubClient, workspace_client, incident: dict):
+    """Returns (run context or None, fingerprint or None, True if it was a repeat).
+    Any failure here only means the incident is diagnosed as new."""
+    incident_id = incident["incident_id"]
+    try:
+        ctx = build_run_context(settings, incident, workspace_client=workspace_client, spark=spark)
+    except Exception:
+        log.exception("run context failed for %s", incident_id)
+        return None, None, False
+    fp = fingerprint(ctx, incident.get("pipeline_name") or "")
+    if not fp:
+        return ctx, None, False
+    try:
+        parent = find_open_parent(settings, spark, fp, incident_id)
+        if parent:
+            record_repeat(settings, spark, gh, incident, fp, parent)
+            return ctx, fp, True
+    except Exception:
+        log.exception("repeat check failed for %s -- diagnosing as new", incident_id)
+    return ctx, fp, False
+
+
+def _record_fingerprint(settings: Settings, spark, incident_id: str, fp: str | None,
+                        issue_number: int | None) -> None:
+    """Best-effort: works only once the dedupe columns are migrated."""
+    fp_sql = f"'{fp}'" if fp else "NULL"
+    issue_sql = int(issue_number) if issue_number else "NULL"
+    try:
+        spark.sql(f"""
+            UPDATE {settings.table('incidents')}
+            SET fingerprint = {fp_sql}, occurrence_count = 1, last_seen_at = current_timestamp(),
+                github_issue_number = {issue_sql}
+            WHERE incident_id = '{incident_id}'
+        """)
+    except Exception as exc:
+        log.warning("fingerprint not recorded for %s (run the migrate job?): %s", incident_id, str(exc)[:160])
 
 
 def process_new_incidents(settings: Settings, spark, llm: LLMClient, gh: GitHubClient,
@@ -223,14 +267,19 @@ def process_new_incidents(settings: Settings, spark, llm: LLMClient, gh: GitHubC
         ORDER BY created_at ASC LIMIT {settings.watcher_batch_limit}
     """).collect()
 
-    diagnosed, auto_executed, blocked, emailed = 0, 0, 0, 0
+    diagnosed, auto_executed, blocked, emailed, repeats = 0, 0, 0, 0, 0
 
     for row in rows:
         incident = row.asDict()
         incident_id = incident["incident_id"]
 
+        ctx, fp, is_repeat = _check_repeat(settings, spark, gh, workspace_client, incident)
+        if is_repeat:
+            repeats += 1
+            continue
+
         try:
-            d, outcome = _diagnose(settings, spark, llm, workspace_client, incident)
+            d, outcome = _diagnose(settings, spark, llm, workspace_client, incident, ctx)
         except Exception:
             log.exception("diagnosis failed for %s -- leaving as NEW for retry", incident_id)
             continue
@@ -252,6 +301,7 @@ def process_new_incidents(settings: Settings, spark, llm: LLMClient, gh: GitHubC
         )
         issue_number = issue.get("number") if issue else None
         issue_url = issue.get("html_url", "") if issue else ""
+        _record_fingerprint(settings, spark, incident_id, fp, issue_number)
         app_url = settings.app_base_url.rstrip("/") if settings.app_base_url else ""
 
         if needs_approval(d):
@@ -305,7 +355,8 @@ def process_new_incidents(settings: Settings, spark, llm: LLMClient, gh: GitHubC
         auto_executed += 1
         log.info("%s -> %s (%s ok, %s failed)", incident_id, status, succeeded, failed)
 
-    return {"diagnosed": diagnosed, "auto_executed": auto_executed, "blocked": blocked, "emailed": emailed}
+    return {"diagnosed": diagnosed, "auto_executed": auto_executed, "blocked": blocked, "emailed": emailed,
+            "repeats": repeats}
 
 
 # --------------------------------------------------------------------- step 3
