@@ -280,9 +280,14 @@ class StorageAgent(BaseAgent):
         SubAgent(
             "TABLE_HEALTH",
             "Is the table present, readable and consistent? Look for missing tables, "
-            "concurrent writers, protocol or log problems.",
+            "concurrent writers, protocol or log problems. When a command fails because a Delta "
+            "table feature is not enabled on the table, propose the exact enabling statement for "
+            "that table, for example `ALTER TABLE <table> SET TBLPROPERTIES "
+            "('delta.feature.allowColumnDefaults' = 'supported')`, and set requires_human to true: "
+            "a table feature upgrades the table's protocol and cannot be switched off again.",
             ("not found", "does not exist", "table_or_view", "concurrent", "protocol",
-             "corrupt", "checksum", "_delta_log", "deltaanalysisexception"),
+             "corrupt", "checksum", "_delta_log", "deltaanalysisexception",
+             "table feature", "feature_not_enabled", "allowcolumndefaults"),
             ("table_exists", "table_detail", "delta_history", "table_properties"),
         ),
         SubAgent(
@@ -301,7 +306,13 @@ class StorageAgent(BaseAgent):
         ),
         SubAgent(
             "DATA_QUALITY",
-            "Is the data itself wrong? Look at nulls, duplicates and schema mismatches.",
+            "Is the data itself wrong? Look at nulls, duplicates and schema mismatches. When a "
+            "write fails on a schema mismatch because the data has columns the table does not, "
+            "compare the table schema and the data schema in the error and propose the table-side "
+            "fix as the action: `ALTER TABLE <table> ADD COLUMNS (<column> <TYPE>, ...)` with the "
+            "exact missing columns and types, and set requires_human to true (other readers depend "
+            "on the schema). Mention the code-side alternative, the mergeSchema write option, in "
+            "fix_suggestion only.",
             ("duplicate", "null", "schema mismatch", "cannot write", "constraint",
              "merge", "cast", "overflow", "invalid value"),
             ("table_exists", "table_detail", "data_profile", "delta_history"),
@@ -310,9 +321,11 @@ class StorageAgent(BaseAgent):
             "DUPLICATE_TABLES",
             "Is this table a leftover copy of another one? Compare the two tables in the evidence: "
             "size, last writes, who writes them, properties. Say which one looks like the live table "
-            "and what the copy costs. Removing or archiving a table is its owner's decision: never "
-            "propose DROP, TRUNCATE or DELETE; give advice for the owner instead (for example, confirm "
-            "nothing reads the copy, then archive or drop it), and set requires_human to true.",
+            "and what the copy costs. Removing a table is its owner's decision, so this always waits "
+            "for approval: propose exactly one action, `DROP TABLE <the copy, fully qualified>`, "
+            "never the live table and never TRUNCATE or DELETE, and set requires_human to true. In "
+            "fix_suggestion, tell the owner what to confirm before approving (nothing still reads "
+            "or writes the copy).",
             ("duplicate table", "leftover copy", "copy of"),
             ("table_exists", "table_detail", "delta_history", "table_properties"),
         ),

@@ -39,12 +39,17 @@ log = logging.getLogger(__name__)
 
 MAX_EVIDENCE_CHARS = 1200      # per tool, in the prompt
 MAX_EVIDENCE_TOTAL = 8000      # all tools together, in the prompt
-# Actions that always need a person, whatever the LLM says.
-_NEEDS_PERSON = re.compile(
-    r"^\s*(GRANT|REVOKE|DROP|TRUNCATE|DELETE|RESTORE)\b"
-    r"|\bDROP\s+(COLUMN|COLUMNS|PARTITION|CONSTRAINT)\b",
-    re.I,
-)
+   # Actions that always need a person, whatever the LLM says: access changes, anything that
+   # drops, deletes or restores data, schema changes (other jobs and readers depend on the
+   # columns), and Delta protocol upgrades (a table feature cannot be switched off again).
+   _NEEDS_PERSON = re.compile(
+       r"^\s*(GRANT|REVOKE|DROP|TRUNCATE|DELETE|RESTORE)\b"
+       r"|\bDROP\s+(COLUMN|COLUMNS|PARTITION|CONSTRAINT)\b"
+       r"|^\s*ALTER\s+TABLE\b.*\b(ADD|ALTER|CHANGE|RENAME|REPLACE)\s+COLUMNS?\b"
+       r"|^\s*ALTER\s+TABLE\b.*\bRENAME\s+TO\b"
+       r"|delta\.feature\.|delta\.min(Reader|Writer)Version",
+       re.I | re.S,
+   )
 _VACUUM = re.compile(r"^\s*VACUUM\b", re.I)
 _VACUUM_RETAIN = re.compile(r"\bRETAIN\s+(\d+(?:\.\d+)?)\s+HOURS?\b", re.I)
 _DRY_RUN = re.compile(r"\bDRY\s+RUN\b", re.I)

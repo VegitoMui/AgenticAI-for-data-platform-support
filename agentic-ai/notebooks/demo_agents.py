@@ -13,11 +13,15 @@
 # MAGIC | Act 1 | Live | Reconciler diagnoses the failures; show board, traces, App, email, GitHub |
 # MAGIC | Act 2 | Live | Same failure again: collapsed into one incident, no new diagnosis |
 # MAGIC | Act 3 | Live | Maintenance fixed on its own: small files compacted |
-# MAGIC | Act 4 | Live | Human decision: duplicate table, approve or reject in the App |
+# MAGIC | Act 4 | Live | Approvals: 3 requests with steps run after approval, 2 advice-only rejected |
 # MAGIC | Act 5 | Live | Memory: what the agents remember about past incidents |
 # MAGIC | 9. Cleanup | After | Drops demo tables, stops the App |
 # MAGIC
 # MAGIC The watcher and reconciler jobs stay paused; this notebook starts single runs of them.
+# MAGIC
+# MAGIC Requests in the App: 2 advice-only (v4 unreachable API, v5 column typo: the fix is outside
+# MAGIC Databricks or in code) and 3 with steps the agent runs once approved (v6 schema mismatch:
+# MAGIC ADD COLUMNS, v7 table feature not enabled: SET TBLPROPERTIES, duplicate table: DROP TABLE).
 
 # COMMAND ----------
 
@@ -45,6 +49,8 @@ PROBE_SCHEMA = f"{CATALOG}.agentic_probe"
 SMALL_FILES_TABLE = f"{PROBE_SCHEMA}.sales_events"         # fresh table, compacted in Act 3
 VACUUM_TABLE = f"{PROBE_SCHEMA}.orders_small_files"        # OPTIMIZEd on 13 Oct, VACUUM due
 DUP_ORIGINAL, DUP_COPY = f"{PROBE_SCHEMA}.customers", f"{PROBE_SCHEMA}.customers_bkp"
+SCHEMA_TABLE = f"{PROBE_SCHEMA}.orders_daily"              # v6 appends a column it does not have
+FEATURE_TABLE = f"{PROBE_SCHEMA}.order_status"             # v7 needs a table feature it does not have
 APP = "agentic-ai-approvals-dev"
 
 WATCHER = "[dev] agentic-ai watcher"
@@ -54,29 +60,57 @@ BASE_PARAMS = [f"--catalog={CATALOG}", f"--schema={SCHEMA}", f"--secret-scope={S
 
 # Only these jobs (and table scans) are shown on the demo board; teammates' jobs are left out.
 PROBE_PREFIX = "agentic-ai probe"
-SINCE_HOURS = 3
+SINCE_HOURS = 6     # demo queries look back this far; pre-run on the day of the demo
 
 w = WorkspaceClient()
 me = w.current_user.me().user_name
 
-# probe key -> (job name, task key, notebook source). v2 is created only if it is missing.
+# probe key -> (job name, task key, notebook source). Jobs are created only if missing.
+#   v4, v5: advice only (fix is outside Databricks / in code)
+#   v6, v7: the agent proposes SQL that runs once a person approves it
 PROBES = {
-    "v2": ("agentic-ai probe v2 (reads a table, then fails)", "read_then_fail",
-           f"n = spark.table('{S}.incidents').count()\n"
-           "raise ValueError(f'order totals do not reconcile: expected 1200 rows, got {n}')\n"),
-    "v3": ("agentic-ai probe v3 (missing table)", "read_missing_table",
-           f"spark.table('{S}.incidentz').count()\n"),
     "v4": ("agentic-ai probe v4 (source unreachable)", "call_source_api",
            "import urllib.request\n"
            "urllib.request.urlopen('https://orders-api.agentic-probe.invalid/v1/orders', timeout=10)\n"),
     "v5": ("agentic-ai probe v5 (unresolved column)", "query_bad_column",
            f"spark.sql('SELECT custmer_id FROM {S}.incidents').show()\n"),
+    "v6": ("agentic-ai probe v6 (schema mismatch on write)", "append_daily_orders",
+           "df = spark.range(10).selectExpr('id AS order_id', 'rand() * 100 AS amount', "
+           "'rand() * 5 AS discount')\n"
+           f"df.write.mode('append').saveAsTable('{SCHEMA_TABLE}')\n"),
+    "v7": ("agentic-ai probe v7 (table feature not enabled)", "set_status_default",
+           f"spark.sql(\"ALTER TABLE {FEATURE_TABLE} ALTER COLUMN status SET DEFAULT 'new'\")\n"),
 }
 
 
 def job_id(name: str) -> int | None:
+    """Exact name first; otherwise a job whose name ends with it (bundle dev mode adds a prefix)."""
     found = [j for j in w.jobs.list(name=name) if j.settings and j.settings.name == name]
+    if not found:
+        found = [j for j in w.jobs.list() if j.settings and (j.settings.name or "").endswith(name)]
+    if len(found) > 1:
+        print(f"note: {len(found)} jobs match {name!r}, using {found[0].settings.name!r}")
     return found[0].job_id if found else None
+
+
+def make_probe_tables() -> None:
+    """Fresh tables for v6 and v7, so they fail the same way every time."""
+    spark.sql(f"CREATE SCHEMA IF NOT EXISTS {PROBE_SCHEMA}")
+    spark.sql(f"CREATE OR REPLACE TABLE {SCHEMA_TABLE} (order_id BIGINT, amount DOUBLE)")
+    spark.sql(f"INSERT INTO {SCHEMA_TABLE} VALUES (1, 10.0), (2, 20.0)")
+    # Pinned to the oldest protocol, so the column-defaults feature is not enabled.
+    spark.sql(f"DROP TABLE IF EXISTS {FEATURE_TABLE}")
+    spark.sql(f"""
+        CREATE TABLE {FEATURE_TABLE} (order_id BIGINT, status STRING)
+        TBLPROPERTIES ('delta.minReaderVersion' = '1', 'delta.minWriterVersion' = '2',
+                       'delta.enableDeletionVectors' = 'false')
+    """)
+    d = spark.sql(f"DESCRIBE DETAIL {FEATURE_TABLE}").first().asDict()
+    feats = d.get("tableFeatures") or []
+    print(f"{FEATURE_TABLE}: protocol {d.get('minReaderVersion')}/{d.get('minWriterVersion')}, "
+          f"features {feats}")
+    if any("columnDefaults" in f for f in feats):
+        print("WARNING: column defaults already enabled, so v7 will not fail")
 
 
 def ensure_probe(key: str) -> int:
@@ -258,10 +292,11 @@ display(spark.sql(f"""
 
 # COMMAND ----------
 
-# 3a. Fail the probes: one run each of v3, v4, v5, and three runs of v2 (for Act 2).
-runs = [start(PROBES[k][0]) for k in ("v3", "v4", "v5")]
+# 3a. Fresh tables for v6/v7, then fail the probes: v5, v6, v7 once and v4 three times (for Act 2).
+make_probe_tables()
+runs = [start(PROBES[k][0]) for k in ("v5", "v6", "v7")]
 for _ in range(3):
-    runs.append(start(PROBES["v2"][0]))
+    runs.append(start(PROBES["v4"][0]))
     time.sleep(5)
 
 # 3b. While they run: a fresh table with 1,000 small files (Act 3).
@@ -298,7 +333,7 @@ wait([start(WATCHER, BASE_PARAMS + ["--detection-source=jobs_api"]), start(SCANN
 
 # COMMAND ----------
 
-# 3e. Expect: v2 x3, v3, v4, v5 from the watcher; SMALL_FILES, DUPLICATE_TABLE (and VACUUM_OVERDUE
+# 3e. Expect: v4 x3, v5, v6, v7 from the watcher; SMALL_FILES, DUPLICATE_TABLE (and VACUUM_OVERDUE
 #     if 1e said DUE) from the scanner. All NEW. If a probe is missing, run 3d again.
 display(spark.sql(f"""
     SELECT incident_id, pipeline_name, task_key, detection_source, status, created_at
@@ -370,20 +405,20 @@ display(spark.sql(f"""
 # MAGIC %md
 # MAGIC ## Act 2. Noise control (live)
 # MAGIC
-# MAGIC v2 already failed three times and shows as one incident. Fail it once more: the reconciler
+# MAGIC v4 already failed three times and shows as one incident. Fail it once more: the reconciler
 # MAGIC recognises the same failure, adds to the count and comments on the existing GitHub issue.
 # MAGIC No new diagnosis, no LLM call, no new email. About 4 minutes.
 
 # COMMAND ----------
 
-wait([start(PROBES["v2"][0])])
+wait([start(PROBES["v4"][0])])
 run_watcher()
 run_job(RECONCILER)
 display(spark.sql(f"""
     SELECT incident_id, status, COALESCE(occurrence_count, 1) AS times_failed, duplicate_of,
            github_issue_number AS issue, last_seen_at
     FROM {S}.incidents
-    WHERE pipeline_name LIKE '{PROBE_PREFIX} v2%'
+    WHERE pipeline_name LIKE '{PROBE_PREFIX} v4%'
       AND created_at >= current_timestamp() - INTERVAL {SINCE_HOURS} HOURS
     ORDER BY created_at
 """))
@@ -413,13 +448,20 @@ display(spark.sql(f"""
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Act 4. A decision only a person can make (live)
+# MAGIC ## Act 4. Decisions only a person can make (live)
 # MAGIC
-# MAGIC The scanner found `customers_bkp`, a copy of `customers`. Whether a copy is still needed is a
-# MAGIC business decision, so this always waits for approval, whatever the agent proposes.
+# MAGIC Five requests wait in the App. Three have steps the agent runs once approved; they always
+# MAGIC wait because they change a schema, upgrade a table's protocol, or drop a table:
+# MAGIC - v6: `ALTER TABLE orders_daily ADD COLUMNS (discount ...)`
+# MAGIC - v7: `ALTER TABLE order_status SET TBLPROPERTIES ('delta.feature.allowColumnDefaults' ...)`
+# MAGIC - duplicate table: `DROP TABLE customers_bkp`
 # MAGIC
-# MAGIC In the App: **approve** the duplicate-table request (the copy is a probe table), and **reject**
-# MAGIC the others with a short note. Then run the next cell.
+# MAGIC Two are advice only (v4 unreachable API, v5 column typo): the fix is outside Databricks or
+# MAGIC in code, so the agent explains it and a person makes the change.
+# MAGIC
+# MAGIC In the App: **approve** the three with steps, **reject** v4 and v5 with a short note
+# MAGIC ("fixing the hostname with the API team", "fixing the typo in the notebook").
+# MAGIC Then run the next cells.
 
 # COMMAND ----------
 
@@ -433,6 +475,12 @@ display(spark.sql(f"""
     ORDER BY a.requested_at
 """))
 print("copy still exists:", spark.catalog.tableExists(DUP_COPY))
+print("orders_daily columns:", [c.name for c in spark.table(SCHEMA_TABLE).schema])
+
+# COMMAND ----------
+
+# Proof the fixes worked: re-run v6 and v7. Both should now end SUCCESS.
+wait([start(PROBES["v6"][0]), start(PROBES["v7"][0])])
 
 # COMMAND ----------
 
@@ -463,8 +511,9 @@ display(spark.sql(f"""
 
 # COMMAND ----------
 
-# 9a. Drop the demo table and put the duplicate pair back for next time.
-spark.sql(f"DROP TABLE IF EXISTS {SMALL_FILES_TABLE}")
+# 9a. Drop the demo tables and put the duplicate pair back for next time.
+for t in (SMALL_FILES_TABLE, SCHEMA_TABLE, FEATURE_TABLE):
+    spark.sql(f"DROP TABLE IF EXISTS {t}")
 if not spark.catalog.tableExists(DUP_COPY):
     spark.sql(f"CREATE TABLE {DUP_COPY} AS SELECT * FROM {DUP_ORIGINAL}")
 print("demo table dropped; duplicate pair restored")

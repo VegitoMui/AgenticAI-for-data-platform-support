@@ -28,9 +28,11 @@ CLUSTER_LEVEL_CONFIGS = {
     "spark.sql.streaming.stopActiveRunOnRestart",
 }
 
+# DROP TABLE is here so an APPROVED drop can run. It never runs unattended: base.needs_person
+# forces approval for any DROP, so it only reaches the executor after a person approves it.
 SQL_DDL_PREFIXES = (
     "OPTIMIZE", "VACUUM", "ANALYZE", "ALTER TABLE", "GRANT",
-    "CREATE TABLE IF NOT EXISTS", "MSCK", "REPAIR", "REFRESH",
+    "CREATE TABLE IF NOT EXISTS", "MSCK", "REPAIR", "REFRESH", "DROP TABLE",
 )
 
 PLACEHOLDER_TABLES = (
