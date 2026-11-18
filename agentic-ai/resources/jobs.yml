@@ -5,7 +5,7 @@ resources:
     watcher:
       name: "[${bundle.target}] agentic-ai watcher"
       schedule:
-        quartz_cron_expression: "0 */5 * * * ?"
+        quartz_cron_expression: "0 0 * * * ?"      
         timezone_id: Asia/Kolkata
         pause_status: PAUSED
       max_concurrent_runs: 1
@@ -36,7 +36,7 @@ resources:
     reconciler:
       name: "[${bundle.target}] agentic-ai reconciler"
       schedule:
-        quartz_cron_expression: "0 */2 * * * ?"
+        quartz_cron_expression: "0 15 * * * ?"     
         timezone_id: Asia/Kolkata
         pause_status: PAUSED
       max_concurrent_runs: 1

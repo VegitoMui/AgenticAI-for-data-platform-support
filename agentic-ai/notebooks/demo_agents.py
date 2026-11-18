@@ -1,37 +1,10 @@
 # Databricks notebook source
-# MAGIC %md
-# MAGIC # Demo: Agentic AI for Data Platform Support
-# MAGIC
-# MAGIC Run top to bottom. Nothing has to be typed during the demo.
-# MAGIC
-# MAGIC | Part | When | What it does |
-# MAGIC |---|---|---|
-# MAGIC | 0. Setup | Always first | Names, helpers |
-# MAGIC | 1. Pre-flight | 30 min before | LLM, App, jobs and tables are ready |
-# MAGIC | 2. Reset | 30 min before | Closes open requests so the demo starts clean |
-# MAGIC | 3. Pre-bake | 15 min before | Fails probes, builds maintenance table, runs watcher and scanner |
-# MAGIC | Act 1 | Live | Reconciler diagnoses the failures; show board, traces, App, email, GitHub |
-# MAGIC | Act 2 | Live | Same failure again: collapsed into one incident, no new diagnosis |
-# MAGIC | Act 3 | Live | Maintenance fixed on its own: small files compacted |
-# MAGIC | Act 4 | Live | Approvals: 3 requests with steps run after approval, 2 advice-only rejected |
-# MAGIC | Act 5 | Live | Memory: what the agents remember about past incidents |
-# MAGIC | 9. Cleanup | After | Drops demo tables, stops the App |
-# MAGIC
-# MAGIC The watcher and reconciler jobs stay paused; this notebook starts single runs of them.
-# MAGIC
-# MAGIC Requests in the App: 2 advice-only (v4 unreachable API, v5 column typo: the fix is outside
-# MAGIC Databricks or in code) and 3 with steps the agent runs once approved (v6 schema mismatch:
-# MAGIC ADD COLUMNS, v7 table feature not enabled: SET TBLPROPERTIES, duplicate table: DROP TABLE).
-
-# COMMAND ----------
-
+# /// script
+# [tool.databricks.environment]
+# environment_version = "6"
+# ///
 # MAGIC %pip install openai requests --quiet
 # MAGIC %restart_python
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## 0. Setup
 
 # COMMAND ----------
 
@@ -46,11 +19,11 @@ from databricks.sdk.service.workspace import ImportFormat, Language
 CATALOG, SCHEMA, SCOPE = "databricks_ws", "agentic_ai_dev", "agentic-ai"
 S = f"{CATALOG}.{SCHEMA}"
 PROBE_SCHEMA = f"{CATALOG}.agentic_probe"
-SMALL_FILES_TABLE = f"{PROBE_SCHEMA}.sales_events"         # fresh table, compacted in Act 3
-VACUUM_TABLE = f"{PROBE_SCHEMA}.orders_small_files"        # OPTIMIZEd on 13 Oct, VACUUM due
+SMALL_FILES_TABLE = f"{PROBE_SCHEMA}.sales_events"         
+VACUUM_TABLE = f"{PROBE_SCHEMA}.orders_small_files"        
 DUP_ORIGINAL, DUP_COPY = f"{PROBE_SCHEMA}.customers", f"{PROBE_SCHEMA}.customers_bkp"
-SCHEMA_TABLE = f"{PROBE_SCHEMA}.orders_daily"              # v6 appends a column it does not have
-FEATURE_TABLE = f"{PROBE_SCHEMA}.order_status"             # v7 needs a table feature it does not have
+SCHEMA_TABLE = f"{PROBE_SCHEMA}.orders_daily"              
+FEATURE_TABLE = f"{PROBE_SCHEMA}.order_status"            
 APP = "agentic-ai-approvals-dev"
 
 WATCHER = "[dev] agentic-ai watcher"
@@ -132,8 +105,10 @@ def start(name: str, python_params: list[str] | None = None) -> int:
     jid = job_id(name)
     if jid is None:
         raise RuntimeError(f"job not found: {name}")
-    run = w.jobs.run_now(job_id=jid, python_params=python_params) if python_params \
-        else w.jobs.run_now(job_id=jid)
+    if python_params:
+        run = w.jobs.run_now(job_id=jid, python_params=python_params)
+    else:
+        run = w.jobs.run_now(job_id=jid)
     print(f"started {name} -> run {run.run_id}")
     return run.run_id
 
@@ -177,11 +152,6 @@ def table_files(table: str) -> str:
 
 
 print("ready:", S, "| user:", me)
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## 1. Pre-flight (30 minutes before)
 
 # COMMAND ----------
 
@@ -242,15 +212,6 @@ print(f"last VACUUM: {last_vacuum} | oldest removal since: {min(removals) if rem
 
 # COMMAND ----------
 
-# MAGIC %md
-# MAGIC ## 2. Reset (30 minutes before)
-# MAGIC
-# MAGIC A new failure that matches an incident still waiting for a decision is collapsed into it,
-# MAGIC so the demo failures would not get their own diagnosis. This closes every open request,
-# MAGIC parks backlog incidents, and moves the watcher's start point to now.
-
-# COMMAND ----------
-
 # 2a. Mark every pending request as rejected; the reconciler closes them (incident, GitHub issue, memory).
 spark.sql(f"""
     UPDATE {S}.approval_requests
@@ -280,15 +241,6 @@ display(spark.sql(f"""
     SELECT status, count(*) AS n FROM {S}.incidents
     WHERE status IN ('NEW', 'PENDING_APPROVAL') GROUP BY status
 """))
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## 3. Pre-bake (15 minutes before)
-# MAGIC
-# MAGIC Fails the probe jobs, builds a table with 1,000 small files, makes sure the duplicate pair
-# MAGIC exists, then runs the watcher and the scanner. Afterwards the incidents are NEW and waiting
-# MAGIC for the reconciler, which runs live in Act 1. Takes about 8 minutes.
 
 # COMMAND ----------
 
@@ -342,16 +294,6 @@ display(spark.sql(f"""
 
 # COMMAND ----------
 
-# MAGIC %md
-# MAGIC ## Act 1. Failure to diagnosis (live)
-# MAGIC
-# MAGIC Start the reconciler, then talk through the architecture while it runs (3 to 5 minutes).
-# MAGIC For each incident it reads the run, routes it to a specialist agent, the agent picks a
-# MAGIC sub-agent and runs tools, recalls similar past incidents, and proposes a fix. Safe fixes run
-# MAGIC on their own; anything else waits for approval in the App, with an email and a GitHub issue.
-
-# COMMAND ----------
-
 run_job(RECONCILER)
 
 # COMMAND ----------
@@ -402,15 +344,6 @@ display(spark.sql(f"""
 
 # COMMAND ----------
 
-# MAGIC %md
-# MAGIC ## Act 2. Noise control (live)
-# MAGIC
-# MAGIC v4 already failed three times and shows as one incident. Fail it once more: the reconciler
-# MAGIC recognises the same failure, adds to the count and comments on the existing GitHub issue.
-# MAGIC No new diagnosis, no LLM call, no new email. About 4 minutes.
-
-# COMMAND ----------
-
 wait([start(PROBES["v4"][0])])
 run_watcher()
 run_job(RECONCILER)
@@ -425,14 +358,6 @@ display(spark.sql(f"""
 
 # COMMAND ----------
 
-# MAGIC %md
-# MAGIC ## Act 3. Self-healing maintenance (already done in Act 1)
-# MAGIC
-# MAGIC No job failed here: the scanner found the problem by looking at the table. OPTIMIZE (and
-# MAGIC VACUUM with the 168-hour retention) are safe, so the reconciler ran them without asking.
-
-# COMMAND ----------
-
 print("small-files table before:", globals().get("BEFORE", "1,000 files (see 3b)"))
 print("small-files table now:   ", table_files(SMALL_FILES_TABLE))
 print("VACUUM table now:        ", table_files(VACUUM_TABLE))
@@ -444,24 +369,6 @@ display(spark.sql(f"""
       AND i.created_at >= current_timestamp() - INTERVAL {SINCE_HOURS} HOURS
     ORDER BY r.executed_at, r.action_index
 """))
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## Act 4. Decisions only a person can make (live)
-# MAGIC
-# MAGIC Five requests wait in the App. Three have steps the agent runs once approved; they always
-# MAGIC wait because they change a schema, upgrade a table's protocol, or drop a table:
-# MAGIC - v6: `ALTER TABLE orders_daily ADD COLUMNS (discount ...)`
-# MAGIC - v7: `ALTER TABLE order_status SET TBLPROPERTIES ('delta.feature.allowColumnDefaults' ...)`
-# MAGIC - duplicate table: `DROP TABLE customers_bkp`
-# MAGIC
-# MAGIC Two are advice only (v4 unreachable API, v5 column typo): the fix is outside Databricks or
-# MAGIC in code, so the agent explains it and a person makes the change.
-# MAGIC
-# MAGIC In the App: **approve** the three with steps, **reject** v4 and v5 with a short note
-# MAGIC ("fixing the hostname with the API team", "fixing the typo in the notebook").
-# MAGIC Then run the next cells.
 
 # COMMAND ----------
 
@@ -484,14 +391,6 @@ wait([start(PROBES["v6"][0]), start(PROBES["v7"][0])])
 
 # COMMAND ----------
 
-# MAGIC %md
-# MAGIC ## Act 5. Memory: it learns from every incident
-# MAGIC
-# MAGIC Every diagnosis is stored with an embedding (`databricks-bge-large-en`). The next similar
-# MAGIC failure recalls it, including how it ended (approved, rejected and why, fixed).
-
-# COMMAND ----------
-
 display(spark.sql(f"""
     SELECT incident_id, pipeline_name, classified_agent, resolution_status,
            left(resolution_notes, 120) AS resolution_notes, similar_incidents_json, created_at
@@ -503,11 +402,6 @@ display(spark.sql(f"""
     SELECT pipeline_name, resolution_status, count(*) AS incidents_remembered
     FROM {S}.incident_memory GROUP BY ALL ORDER BY incidents_remembered DESC
 """))
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## 9. Cleanup (after the demo)
 
 # COMMAND ----------
 
